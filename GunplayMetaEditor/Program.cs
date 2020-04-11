@@ -7,6 +7,345 @@ using System.IO;
 using System.Xml;
 using System.Xml.Linq;
 using System.Globalization;
+using System.Diagnostics;                // for Debug
+using System.Drawing;                    // for Color (add reference to  System.Drawing assembly)
+using System.Runtime.InteropServices;    // for StructLayout
+using System.Threading;
+
+internal class SetScreenColorsDemo
+{
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct COORD
+    {
+        internal short X;
+        internal short Y;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct SMALL_RECT
+    {
+        internal short Left;
+        internal short Top;
+        internal short Right;
+        internal short Bottom;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct COLORREF
+    {
+        internal uint ColorDWORD;
+
+        internal COLORREF(Color color)
+        {
+            ColorDWORD = (uint)color.R + (((uint)color.G) << 8) + (((uint)color.B) << 16);
+        }
+
+        internal COLORREF(uint r, uint g, uint b)
+        {
+            ColorDWORD = r + (g << 8) + (b << 16);
+        }
+
+        internal Color GetColor()
+        {
+            return Color.FromArgb((int)(0x000000FFU & ColorDWORD),
+               (int)(0x0000FF00U & ColorDWORD) >> 8, (int)(0x00FF0000U & ColorDWORD) >> 16);
+        }
+
+        internal void SetColor(Color color)
+        {
+            ColorDWORD = (uint)color.R + (((uint)color.G) << 8) + (((uint)color.B) << 16);
+        }
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct CONSOLE_SCREEN_BUFFER_INFO_EX
+    {
+        internal int cbSize;
+        internal COORD dwSize;
+        internal COORD dwCursorPosition;
+        internal ushort wAttributes;
+        internal SMALL_RECT srWindow;
+        internal COORD dwMaximumWindowSize;
+        internal ushort wPopupAttributes;
+        internal bool bFullscreenSupported;
+        internal COLORREF black;
+        internal COLORREF darkBlue;
+        internal COLORREF darkGreen;
+        internal COLORREF darkCyan;
+        internal COLORREF darkRed;
+        internal COLORREF darkMagenta;
+        internal COLORREF darkYellow;
+        internal COLORREF gray;
+        internal COLORREF darkGray;
+        internal COLORREF blue;
+        internal COLORREF green;
+        internal COLORREF cyan;
+        internal COLORREF red;
+        internal COLORREF magenta;
+        internal COLORREF yellow;
+        internal COLORREF white;
+    }
+
+    public struct ColorRGB
+
+    {
+
+        public byte R;
+
+        public byte G;
+
+        public byte B;
+
+        public ColorRGB(Color value)
+
+        {
+
+            this.R = value.R;
+
+            this.G = value.G;
+
+            this.B = value.B;
+
+        }
+
+        public static implicit operator Color(ColorRGB rgb)
+
+        {
+
+            Color c = Color.FromArgb(rgb.R, rgb.G, rgb.B);
+
+            return c;
+
+        }
+
+        public static explicit operator ColorRGB(Color c)
+
+        {
+
+            return new ColorRGB(c);
+
+        }
+
+    }
+
+    const int STD_OUTPUT_HANDLE = -11;                                        // per WinBase.h
+    internal static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);    // per WinBase.h
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetConsoleScreenBufferInfoEx(IntPtr hConsoleOutput, ref CONSOLE_SCREEN_BUFFER_INFO_EX csbe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleScreenBufferInfoEx(IntPtr hConsoleOutput, ref CONSOLE_SCREEN_BUFFER_INFO_EX csbe);
+    
+    public static int SetColor(ConsoleColor consoleColor, Color targetColor)
+    {
+        return SetColor(consoleColor, targetColor.R, targetColor.G, targetColor.B);
+    }
+
+    public static int SetColor(ConsoleColor color, uint r, uint g, uint b)
+    {
+        CONSOLE_SCREEN_BUFFER_INFO_EX csbe = new CONSOLE_SCREEN_BUFFER_INFO_EX();
+        csbe.cbSize = (int)Marshal.SizeOf(csbe);                    // 96 = 0x60
+        IntPtr hConsoleOutput = GetStdHandle(STD_OUTPUT_HANDLE);    // 7
+        if (hConsoleOutput == INVALID_HANDLE_VALUE)
+        {
+            return Marshal.GetLastWin32Error();
+        }
+        bool brc = GetConsoleScreenBufferInfoEx(hConsoleOutput, ref csbe);
+        if (!brc)
+        {
+            return Marshal.GetLastWin32Error();
+        }
+
+        switch (color)
+        {
+            case ConsoleColor.Black:
+                csbe.black = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.DarkBlue:
+                csbe.darkBlue = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.DarkGreen:
+                csbe.darkGreen = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.DarkCyan:
+                csbe.darkCyan = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.DarkRed:
+                csbe.darkRed = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.DarkMagenta:
+                csbe.darkMagenta = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.DarkYellow:
+                csbe.darkYellow = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.Gray:
+                csbe.gray = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.DarkGray:
+                csbe.darkGray = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.Blue:
+                csbe.blue = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.Green:
+                csbe.green = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.Cyan:
+                csbe.cyan = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.Red:
+                csbe.red = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.Magenta:
+                csbe.magenta = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.Yellow:
+                csbe.yellow = new COLORREF(r, g, b);
+                break;
+            case ConsoleColor.White:
+                csbe.white = new COLORREF(r, g, b);
+                break;
+        }
+        ++csbe.srWindow.Bottom;
+        ++csbe.srWindow.Right;
+        brc = SetConsoleScreenBufferInfoEx(hConsoleOutput, ref csbe);
+        if (!brc)
+        {
+            return Marshal.GetLastWin32Error();
+        }
+        return 0;
+    }
+
+    public static ColorRGB HSL2RGB(double h, double sl, double l)
+
+    {
+
+        double v;
+
+        double r, g, b;
+
+
+
+        r = l;   // default to gray
+
+        g = l;
+
+        b = l;
+
+        v = (l <= 0.5) ? (l * (1.0 + sl)) : (l + sl - l * sl);
+
+        if (v > 0)
+
+        {
+
+            double m;
+
+            double sv;
+
+            int sextant;
+
+            double fract, vsf, mid1, mid2;
+
+
+
+            m = l + l - v;
+
+            sv = (v - m) / v;
+
+            h *= 6.0;
+
+            sextant = (int)h;
+
+            fract = h - sextant;
+
+            vsf = v * sv * fract;
+
+            mid1 = m + vsf;
+
+            mid2 = v - vsf;
+
+            switch (sextant)
+
+            {
+
+                case 0:
+
+                    r = v;
+
+                    g = mid1;
+
+                    b = m;
+
+                    break;
+
+                case 1:
+
+                    r = mid2;
+
+                    g = v;
+
+                    b = m;
+
+                    break;
+
+                case 2:
+
+                    r = m;
+
+                    g = v;
+
+                    b = mid1;
+
+                    break;
+
+                case 3:
+
+                    r = m;
+
+                    g = mid2;
+
+                    b = v;
+
+                    break;
+
+                case 4:
+
+                    r = mid1;
+
+                    g = m;
+
+                    b = v;
+
+                    break;
+
+                case 5:
+
+                    r = v;
+
+                    g = m;
+
+                    b = mid2;
+
+                    break;
+
+            }
+
+        }
+
+        ColorRGB rgb;
+
+        rgb.R = Convert.ToByte(r * 255.0f);
+
+        rgb.G = Convert.ToByte(g * 255.0f);
+
+        rgb.B = Convert.ToByte(b * 255.0f);
+
+        return rgb;
+
+    }
+}
 
 namespace GunplayMetaEditor
 {
@@ -28,19 +367,9 @@ namespace GunplayMetaEditor
         const bool Debug = true; //|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
         private static bool usingRGS;
 
-        private static void PrintLine(string text, ConsoleColor color, float justify)
-        {
-            if (text.Length > 0)
-            {
-                Console.SetCursorPosition((int)((Console.WindowWidth - text.Length) * justify), Console.CursorTop);
-                Console.ForegroundColor = color;
-                Console.WriteLine(text);
-                Console.ResetColor();
-            }
-        }
-
         static void Main(string[] args)
         {
+            
             List<string> arguments = args.ToList();
 
             foreach (string arg in args)
@@ -53,13 +382,15 @@ namespace GunplayMetaEditor
                             break;
                         }
                 }
-                if (!File.Exists(arg)) //Strip switches and nonsense
+                
+                if (!File.Exists(arg) && !Directory.Exists(arg)) //Strip switches and nonsense
                 {
                     arguments.RemoveAll(n => n.Equals(arg, StringComparison.OrdinalIgnoreCase));
                 }
             }
 
             if (usingRGS) { PrintLine("RGS Values enabled.", ConsoleColor.Blue, 0.0f); }
+            
 
             if (arguments.Count == 0) //Complain if no file was dragged onto exe
             {
@@ -71,65 +402,224 @@ namespace GunplayMetaEditor
             {
                 for (int i = 0; i < arguments.Count; i++)
                 {
-                    XDocument xmlFile = XDocument.Load(arguments[i]);
-                    FileType fType = FileType.Unknown;
-                    if (xmlFile.Elements("sPedAccuracyModifiers").Count() > 0) { fType = FileType.Pedaccuracy_meta; }
-                    else if (xmlFile.Elements("CPedDamageData").Count() > 0) { fType = FileType.Peddamage_xml; }
-                    else if (xmlFile.Elements("CHealthConfigInfoManager").Count() > 0) { fType = FileType.Pedhealth_meta; }
-                    else if (xmlFile.Elements("CPickupDataManager").Count() > 0) { fType = FileType.Pickups_meta; }
-                    else if (xmlFile.Elements("ScaleformPreallocation").Count() > 0) { fType = FileType.Scaleformpreallocation_xml; }
-                    else if (xmlFile.Elements("CTaskDataInfoManager").Count() > 0) { fType = FileType.Taskdata_meta; }
-                    else if (xmlFile.Elements("CWeaponInfoBlob").Count() > 0) { fType = FileType.Weapons_meta; }
-                    else if (Path.GetFileNameWithoutExtension(arguments[i]).ToLower().Contains("wantedtuning")) { fType = FileType.Wantedtuning_ymt; }
-
-                    switch (fType)
+                    if (File.Exists(arguments[i]))
                     {
-                        case FileType.Pedaccuracy_meta:
-                            {
-                                PedAccuracyMod(xmlFile, arguments[i]);
-                                Console.WriteLine();
-                                break;
-                            }
-                        case FileType.Peddamage_xml:
-                            {
-                                PedDamageMod(xmlFile, arguments[i]);
-                                Console.WriteLine();
-                                break;
-                            }
-                        case FileType.Pedhealth_meta:
-                            {
-                                PedHealthMod(xmlFile, arguments[i]);
-                                Console.WriteLine();
-                                break;
-                            }
-                        case FileType.Pickups_meta:
-                            {
-                                PickupsMod(xmlFile, arguments[i]);
-                                Console.WriteLine();
-                                break;
-                            }
-                        case FileType.Scaleformpreallocation_xml:
-                            {
-                                ScaleformPreallocationMod(xmlFile, arguments[i]);
-                                Console.WriteLine();
-                                break;
-                            }
-                        case FileType.Taskdata_meta:
-                            {
-                                TaskdataMod(xmlFile, arguments[i]);
-                                Console.WriteLine();
-                                break;
-                            }
-                        case FileType.Weapons_meta:
-                            {
-                                WeaponsMod(xmlFile, arguments[i]);
-                                Console.WriteLine();
-                                break;
-                            }
+                        ModifyFile(arguments[i], false);
+                    }
+                    else if (Directory.Exists(arguments[i]))
+                    {
+                        BackupDirectory(arguments[i]);
+                        ModifyAllInDirectory(arguments[i]);
+                        RemoveEmptySubdirectories(arguments[i]);
                     }
                 }
-                Console.WriteLine(".meta files edited. Press any key to close.");
-                Console.ReadKey();
+
+                ShowSuccessMessage();
+            }
+        }
+
+        public static string MakeRelativePath(string fromPath, string toPath)
+        {
+            if (string.IsNullOrEmpty(fromPath)) throw new ArgumentNullException("fromPath");
+            if (string.IsNullOrEmpty(toPath)) throw new ArgumentNullException("toPath");
+
+            //PrintLine("from: " + fromPath, ConsoleColor.Cyan, 0.0f);
+            //PrintLine("to: " + toPath, ConsoleColor.Cyan, 0.0f);
+
+            Uri fromUri = new Uri(fromPath);
+            Uri toUri = new Uri(toPath);
+
+            if (fromUri.Scheme != toUri.Scheme) { return toPath; } // path can't be made relative.
+
+            Uri relativeUri = fromUri.MakeRelativeUri(toUri);
+            string relativePath = Uri.UnescapeDataString(relativeUri.ToString());
+
+            if (toUri.Scheme.Equals("file", StringComparison.InvariantCultureIgnoreCase))
+            {
+                relativePath = relativePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+            }
+
+            return relativePath;
+        }
+
+        public static void ModifyAllInDirectory(string source)
+        {
+            var diSource = new DirectoryInfo(source);
+            // Copy each file into the new directory.
+            foreach (FileInfo fi in diSource.GetFiles())
+            {
+                ModifyFile(fi.FullName, true);
+            }
+
+            // Copy each subdirectory using recursion.
+            foreach (DirectoryInfo diSourceSubDir in diSource.GetDirectories())
+            {
+                ModifyAllInDirectory(diSourceSubDir.FullName);
+            }
+        }
+
+        public static void RemoveEmptySubdirectories(string source)
+        {
+            foreach (string subDir in Directory.GetDirectories(source))
+            {
+                RemoveEmptySubdirectories(subDir);
+                if (Directory.GetFiles(subDir).Length == 0 &&
+                    Directory.GetDirectories(subDir).Length == 0)
+                {
+                    Directory.Delete(subDir, false);
+                }
+            }
+        }
+
+        public static void BackupDirectory(string directory)
+        {
+            DirectoryInfo sourceDir = new DirectoryInfo(directory);
+            CopyDirectory(sourceDir.FullName, sourceDir.Parent.FullName + @"\" + sourceDir.Name + @" - Backup");
+        }
+
+        public static void CopyDirectory(string sourceDirectory, string targetDirectory)
+        {
+            var diSource = new DirectoryInfo(sourceDirectory);
+            var diTarget = new DirectoryInfo(targetDirectory);
+
+            CopyAllInDirectory(diSource, diTarget);
+        }
+
+        public static void CopyAllInDirectory(DirectoryInfo source, DirectoryInfo target)
+        {
+            Directory.CreateDirectory(target.FullName);
+            
+            foreach (FileInfo fi in source.GetFiles())
+            {
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine(@"Backing up {1}\{0}", MakeRelativePath(Directory.GetCurrentDirectory(), target.FullName), MakeRelativePath(Directory.GetCurrentDirectory(), fi.FullName));
+                Console.ResetColor();
+                fi.CopyTo(Path.Combine(target.FullName, fi.Name), true);
+            }
+            
+            foreach (DirectoryInfo diSourceSubDir in source.GetDirectories())
+            {
+                DirectoryInfo nextTargetSubDir =
+                    target.CreateSubdirectory(diSourceSubDir.Name);
+                CopyAllInDirectory(diSourceSubDir, nextTargetSubDir);
+            }
+        }
+
+        private static void ShowSuccessMessage()
+        {
+            string msg = ".meta files edited. Press any key to close.";
+            float sparkle = 0;
+            double c = 0;
+            Console.CursorVisible = false;
+
+            while (!Console.KeyAvailable)
+            {
+                int index = (int)Math.Round(sparkle, 0);
+                string frntmsg = msg.Substring(0, index); ;
+                string rearmsg = msg.Substring(index + 1, msg.Length - (index + 1));
+
+
+                Console.ForegroundColor = ConsoleColor.DarkMagenta;
+                SetScreenColorsDemo.SetColor(ConsoleColor.DarkMagenta, SetScreenColorsDemo.HSL2RGB(c, 0.40, 0.50));
+                Console.SetCursorPosition((int)((Console.WindowWidth - msg.Length) * 0.5), Console.CursorTop);
+                Console.Write(frntmsg);
+                Console.SetCursorPosition((int)((Console.WindowWidth - msg.Length) * 0.5) + index + 1, Console.CursorTop);
+                Console.Write(rearmsg);
+
+                Console.SetCursorPosition((int)((Console.WindowWidth - msg.Length) * 0.5) + index, Console.CursorTop);
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.Write(msg[index]);
+                sparkle += 0.015f;
+                if (sparkle >= msg.Length - 1) { sparkle = 0; }
+                c += 0.0001;
+                if (c >= 1) { c = 0; }
+                Thread.Sleep(0);
+            }
+            Console.Clear();
+            Console.CursorVisible = true;
+        }
+
+        private static void ModifyFile(string arg, bool deleteUnused)
+        {
+            XDocument xmlFile;
+            try
+            {
+                xmlFile = XDocument.Load(arg);
+                FileType fType = FileType.Unknown;
+                if (xmlFile.Elements("sPedAccuracyModifiers").Count() > 0) { fType = FileType.Pedaccuracy_meta; }
+                else if (xmlFile.Elements("CPedDamageData").Count() > 0) { fType = FileType.Peddamage_xml; }
+                else if (xmlFile.Elements("CHealthConfigInfoManager").Count() > 0) { fType = FileType.Pedhealth_meta; }
+                else if (xmlFile.Elements("CPickupDataManager").Count() > 0) { fType = FileType.Pickups_meta; }
+                else if (xmlFile.Elements("ScaleformPreallocation").Count() > 0) { fType = FileType.Scaleformpreallocation_xml; }
+                else if (xmlFile.Elements("CTaskDataInfoManager").Count() > 0) { fType = FileType.Taskdata_meta; }
+                else if (xmlFile.Elements("CWeaponInfoBlob").Count() > 0) { fType = FileType.Weapons_meta; }
+                else if (Path.GetFileNameWithoutExtension(arg).ToLower().Contains("wantedtuning")) { fType = FileType.Wantedtuning_ymt; }
+
+                switch (fType)
+                {
+                    case FileType.Pedaccuracy_meta:
+                        {
+                            PedAccuracyMod(xmlFile, arg);
+                            Console.WriteLine();
+                            break;
+                        }
+                    case FileType.Peddamage_xml:
+                        {
+                            PedDamageMod(xmlFile, arg);
+                            Console.WriteLine();
+                            break;
+                        }
+                    case FileType.Pedhealth_meta:
+                        {
+                            PedHealthMod(xmlFile, arg);
+                            Console.WriteLine();
+                            break;
+                        }
+                    case FileType.Pickups_meta:
+                        {
+                            PickupsMod(xmlFile, arg);
+                            Console.WriteLine();
+                            break;
+                        }
+                    case FileType.Scaleformpreallocation_xml:
+                        {
+                            ScaleformPreallocationMod(xmlFile, arg);
+                            Console.WriteLine();
+                            break;
+                        }
+                    case FileType.Taskdata_meta:
+                        {
+                            TaskdataMod(xmlFile, arg);
+                            Console.WriteLine();
+                            break;
+                        }
+                    case FileType.Weapons_meta:
+                        {
+                            WeaponsMod(xmlFile, arg);
+                            Console.WriteLine();
+                            break;
+                        }
+                    case FileType.Unknown:
+                        {
+                            if (deleteUnused) { File.Delete(arg); } //delete unused XML file
+                            break;
+                        }
+                }
+            }
+            catch (Exception exc)
+            {
+                if (deleteUnused) { File.Delete(arg); } //delete non-XML file
+            }
+        }
+
+        private static void PrintLine(string text, ConsoleColor color, float justify)
+        {
+            if (text.Length > 0)
+            {
+                Console.SetCursorPosition((int)((Console.WindowWidth - text.Length) * justify), Console.CursorTop);
+                Console.ForegroundColor = color;
+                Console.WriteLine(text);
+                Console.ResetColor();
             }
         }
 
@@ -145,13 +635,13 @@ namespace GunplayMetaEditor
                 if (globalMod != null)
                 {
                     globalMod.Attribute("value").Value = "1.000000";
-                    PrintLine("AI_GLOBAL_MODIFIER set to 1.000000", ConsoleColor.DarkGray, 0.0f);
+                    PrintLine("AI_GLOBAL_MODIFIER decreased to 1.000000", ConsoleColor.DarkGray, 0.0f);
                 }
                 XElement proVSAiMod = sPedAccuracyModifiers.Element("AI_PROFESSIONAL_PISTOL_VS_AI_MODIFIER");
                 if (proVSAiMod != null)
                 {
                     proVSAiMod.Attribute("value").Value = "1.000000";
-                    PrintLine("AI_PROFESSIONAL_PISTOL_VS_AI_MODIFIER  set to 1.000000", ConsoleColor.DarkGray, 0.0f);
+                    PrintLine("AI_PROFESSIONAL_PISTOL_VS_AI_MODIFIER decreased to 1.000000", ConsoleColor.DarkGray, 0.0f);
                 }
             }
             xmlFile.Save(arg + (Debug ? "test" : ""));
@@ -169,19 +659,19 @@ namespace GunplayMetaEditor
                 if (loResTDist != null)
                 {
                     loResTDist.Attribute("value").Value = "300.000000";
-                    PrintLine("LowResTargetDistanceCutoff set to 300.000000", ConsoleColor.DarkGray, 0.0f);
+                    PrintLine("LowResTargetDistanceCutoff increased to 300.000000", ConsoleColor.DarkGray, 0.0f);
                 }
                 XElement ScarNum = CPedDamageData.Element("NumWoundsToScarsOnDeathSP");
                 if (ScarNum != null)
                 {
                     ScarNum.Attribute("value").Value = "20";
-                    PrintLine("NumWoundsToScarsOnDeathSP set to 20", ConsoleColor.DarkGray, 0.0f);
+                    PrintLine("NumWoundsToScarsOnDeathSP increased to 20", ConsoleColor.DarkGray, 0.0f);
                 }
                 XElement WoundNum = CPedDamageData.Element("MaxPlayerBloodWoundsSP");
                 if (WoundNum != null)
                 {
                     WoundNum.Attribute("value").Value = "200";
-                    PrintLine("MaxPlayerBloodWoundsSP set to 200", ConsoleColor.DarkGray, 0.0f);
+                    PrintLine("MaxPlayerBloodWoundsSP increased to 200", ConsoleColor.DarkGray, 0.0f);
                 }
             }
             xmlFile.Save(arg + (Debug ? "test" : ""));
