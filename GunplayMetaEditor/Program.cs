@@ -11,6 +11,9 @@ using System.Diagnostics;                // for Debug
 using System.Drawing;                    // for Color (add reference to  System.Drawing assembly)
 using System.Runtime.InteropServices;    // for StructLayout
 using System.Threading;
+using CodeWalker.GameFiles;
+using GunplayMetaEditor.Properties;
+using Microsoft.Win32;
 
 internal class SetScreenColorsDemo
 {
@@ -351,6 +354,7 @@ namespace GunplayMetaEditor
 {
     enum FileType
     {
+        RAGEPackageFile,
         Pedaccuracy_meta,
         Peddamage_xml,
         Pedhealth_meta,
@@ -369,7 +373,17 @@ namespace GunplayMetaEditor
 
         static void Main(string[] args)
         {
-            
+            if (!GTAFolder.UpdateGTAFolder(Properties.Settings.Default.RememberGTADirectory))
+            {
+                PrintLine("Could not start because no valid GTA 5 folder was selected.", ConsoleColor.Red, 0.0f);
+                PrintLine("Exiting...", ConsoleColor.Red, 0.0f);
+                Console.ReadKey();
+                return;
+            }
+
+            PrintLine("Loading Keys...", ConsoleColor.Cyan, 0.0f);
+            GTA5Keys.LoadFromPath(Properties.Settings.Default.GTADirectory);
+
             List<string> arguments = args.ToList();
 
             foreach (string arg in args)
@@ -382,7 +396,7 @@ namespace GunplayMetaEditor
                             break;
                         }
                 }
-                
+
                 if (!File.Exists(arg) && !Directory.Exists(arg)) //Strip switches and nonsense
                 {
                     arguments.RemoveAll(n => n.Equals(arg, StringComparison.OrdinalIgnoreCase));
@@ -390,7 +404,7 @@ namespace GunplayMetaEditor
             }
 
             if (usingRGS) { PrintLine("RGS Values enabled.", ConsoleColor.Blue, 0.0f); }
-            
+
 
             if (arguments.Count == 0) //Complain if no file was dragged onto exe
             {
@@ -404,7 +418,21 @@ namespace GunplayMetaEditor
                 {
                     if (File.Exists(arguments[i]))
                     {
-                        ModifyFile(arguments[i], false);
+                        FileType fType = GetFileType(arguments[i]);
+                        PrintLine(fType.ToString(), ConsoleColor.Yellow, 0.5f);
+                        switch (fType)
+                        {
+                            case FileType.RAGEPackageFile:
+                                {
+                                    UnpackRPF(Path.GetFullPath(arguments[i]));
+                                    break;
+                                }
+                            default:
+                                {
+                                    ModifyFile(arguments[i], false);
+                                    break;
+                                }
+                        }
                     }
                     else if (Directory.Exists(arguments[i]))
                     {
@@ -414,7 +442,42 @@ namespace GunplayMetaEditor
                     }
                 }
 
-                ShowSuccessMessage();
+                ShowSuccessMessage(".meta files edited. Press any key to close.");
+            }
+        }
+
+        public static void UnpackRPF(string fPath)
+        {
+            Action<string> status = null;//(x) => PrintLine(x, ConsoleColor.DarkCyan, 0.0f);
+            Action<string> error = null;// (x) => PrintLine(x, ConsoleColor.Red, 0.0f);
+            string relPath = MakeRelativePath(Directory.GetCurrentDirectory(), fPath);
+            RpfFile file = new RpfFile(fPath, relPath);
+            file.ScanStructure(status, error);
+            foreach (RpfFileEntry entry in file.GetFiles("", true))
+            {
+                string path = entry.Path;
+                if (path.EndsWith(".rpf")) { continue; }
+
+                path = path.Replace(".rpf", "_rpf");
+                path = Path.GetDirectoryName(fPath) + path.Substring(path.IndexOf('\\'));
+                string directory = Path.GetDirectoryName(path);
+                Directory.CreateDirectory(directory);
+
+                byte[] data = file.ExtractFile(entry);
+                if (data != null)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(path, data);
+                        PrintLine(path, ConsoleColor.Magenta, 1.0f);
+                    }
+                    catch (Exception ex)
+                    {
+                        PrintLine("Error saving file " + path + ": " + ex.ToString(), ConsoleColor.Red, 1.0f);
+                        Console.ReadKey();
+                        return;
+                    }
+                }
             }
         }
 
@@ -458,6 +521,22 @@ namespace GunplayMetaEditor
             }
         }
 
+        public static void UnpackAllInDirectory(string source)
+        {
+            var diSource = new DirectoryInfo(source);
+            // Copy each file into the new directory.
+            foreach (FileInfo fi in diSource.GetFiles())
+            {
+                UnpackRPF(fi.FullName);
+            }
+
+            // Copy each subdirectory using recursion.
+            foreach (DirectoryInfo diSourceSubDir in diSource.GetDirectories())
+            {
+                UnpackAllInDirectory(diSourceSubDir.FullName);
+            }
+        }
+
         public static void RemoveEmptySubdirectories(string source)
         {
             foreach (string subDir in Directory.GetDirectories(source))
@@ -488,15 +567,15 @@ namespace GunplayMetaEditor
         public static void CopyAllInDirectory(DirectoryInfo source, DirectoryInfo target)
         {
             Directory.CreateDirectory(target.FullName);
-            
+
             foreach (FileInfo fi in source.GetFiles())
             {
                 Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.WriteLine(@"Backing up {1}\{0}", MakeRelativePath(Directory.GetCurrentDirectory(), target.FullName), MakeRelativePath(Directory.GetCurrentDirectory(), fi.FullName));
+                Console.WriteLine(@"Backing up {1} -> {0}", MakeRelativePath(Directory.GetCurrentDirectory(), target.FullName), MakeRelativePath(Directory.GetCurrentDirectory(), fi.FullName));
                 Console.ResetColor();
                 fi.CopyTo(Path.Combine(target.FullName, fi.Name), true);
             }
-            
+
             foreach (DirectoryInfo diSourceSubDir in source.GetDirectories())
             {
                 DirectoryInfo nextTargetSubDir =
@@ -505,9 +584,8 @@ namespace GunplayMetaEditor
             }
         }
 
-        private static void ShowSuccessMessage()
+        private static void ShowSuccessMessage(string msg)
         {
-            string msg = ".meta files edited. Press any key to close.";
             float sparkle = 0;
             double c = 0;
             Console.CursorVisible = false;
@@ -535,229 +613,305 @@ namespace GunplayMetaEditor
                 if (c >= 1) { c = 0; }
                 Thread.Sleep(0);
             }
-            Console.Clear();
+            //Console.Clear();
             Console.CursorVisible = true;
+        }
+
+        private static FileType GetFileType(string path)
+        {
+            FileType fType = FileType.Unknown;
+            if (Path.GetExtension(path).ToLower() == ".rpf") { fType = FileType.RAGEPackageFile; }
+            else if (Path.GetExtension(path).ToLower() == ".meta")
+            {
+                XDocument xmlFile;
+                try
+                {
+                    xmlFile = XDocument.Load(path);
+                    if (xmlFile.Elements("sPedAccuracyModifiers").Count() > 0) { fType = FileType.Pedaccuracy_meta; }
+                    else if (xmlFile.Elements("CHealthConfigInfoManager").Count() > 0) { fType = FileType.Pedhealth_meta; }
+                    else if (xmlFile.Elements("CPickupDataManager").Count() > 0) { fType = FileType.Pickups_meta; }
+                    else if (xmlFile.Elements("CTaskDataInfoManager").Count() > 0) { fType = FileType.Taskdata_meta; }
+                    else if (xmlFile.Elements("CWeaponInfoBlob").Count() > 0) { fType = FileType.Weapons_meta; }
+                }
+                catch { }
+            }
+            else if (Path.GetExtension(path).ToLower() == ".xml")
+            {
+                XDocument xmlFile;
+                try
+                {
+                    xmlFile = XDocument.Load(path);
+                    if (xmlFile.Elements("CPedDamageData").Count() > 0) { fType = FileType.Peddamage_xml; }
+                    else if (Path.GetFileNameWithoutExtension(path).ToLower() == "scaleformpreallocation" && xmlFile.Elements("ScaleformPreallocation").Count() > 0) { fType = FileType.Scaleformpreallocation_xml; }
+                }
+                catch { }
+            }
+            else if (Path.GetExtension(path).ToLower() == ".ymt")
+            {
+                XDocument xmlFile;
+                try
+                {
+                    xmlFile = XDocument.Load(path);
+                    if (Path.GetFileNameWithoutExtension(path).ToLower().Contains("wantedtuning")) { fType = FileType.Wantedtuning_ymt; }
+                }
+                catch { }
+            }
+
+            return fType;
         }
 
         private static void ModifyFile(string arg, bool deleteUnused)
         {
-            XDocument xmlFile;
-            try
-            {
-                xmlFile = XDocument.Load(arg);
-                FileType fType = FileType.Unknown;
-                if (xmlFile.Elements("sPedAccuracyModifiers").Count() > 0) { fType = FileType.Pedaccuracy_meta; }
-                else if (xmlFile.Elements("CPedDamageData").Count() > 0) { fType = FileType.Peddamage_xml; }
-                else if (xmlFile.Elements("CHealthConfigInfoManager").Count() > 0) { fType = FileType.Pedhealth_meta; }
-                else if (xmlFile.Elements("CPickupDataManager").Count() > 0) { fType = FileType.Pickups_meta; }
-                else if (xmlFile.Elements("ScaleformPreallocation").Count() > 0) { fType = FileType.Scaleformpreallocation_xml; }
-                else if (xmlFile.Elements("CTaskDataInfoManager").Count() > 0) { fType = FileType.Taskdata_meta; }
-                else if (xmlFile.Elements("CWeaponInfoBlob").Count() > 0) { fType = FileType.Weapons_meta; }
-                else if (Path.GetFileNameWithoutExtension(arg).ToLower().Contains("wantedtuning")) { fType = FileType.Wantedtuning_ymt; }
+            FileType fType = GetFileType(arg);
 
-                switch (fType)
-                {
-                    case FileType.Pedaccuracy_meta:
-                        {
-                            PedAccuracyMod(xmlFile, arg);
-                            Console.WriteLine();
-                            break;
-                        }
-                    case FileType.Peddamage_xml:
-                        {
-                            PedDamageMod(xmlFile, arg);
-                            Console.WriteLine();
-                            break;
-                        }
-                    case FileType.Pedhealth_meta:
-                        {
-                            PedHealthMod(xmlFile, arg);
-                            Console.WriteLine();
-                            break;
-                        }
-                    case FileType.Pickups_meta:
-                        {
-                            PickupsMod(xmlFile, arg);
-                            Console.WriteLine();
-                            break;
-                        }
-                    case FileType.Scaleformpreallocation_xml:
-                        {
-                            ScaleformPreallocationMod(xmlFile, arg);
-                            Console.WriteLine();
-                            break;
-                        }
-                    case FileType.Taskdata_meta:
-                        {
-                            TaskdataMod(xmlFile, arg);
-                            Console.WriteLine();
-                            break;
-                        }
-                    case FileType.Weapons_meta:
-                        {
-                            WeaponsMod(xmlFile, arg);
-                            Console.WriteLine();
-                            break;
-                        }
-                    case FileType.Unknown:
-                        {
-                            if (deleteUnused) { File.Delete(arg); } //delete unused XML file
-                            break;
-                        }
-                }
-            }
-            catch (Exception exc)
+            switch (fType)
             {
-                if (deleteUnused) { File.Delete(arg); } //delete non-XML file
+                case FileType.Pedaccuracy_meta:
+                    {
+                        PedAccuracyMod(arg);
+                        Console.WriteLine();
+                        break;
+                    }
+                case FileType.Peddamage_xml:
+                    {
+                        PedDamageMod(arg);
+                        Console.WriteLine();
+                        break;
+                    }
+                case FileType.Pedhealth_meta:
+                    {
+                        PedHealthMod(arg);
+                        Console.WriteLine();
+                        break;
+                    }
+                case FileType.Pickups_meta:
+                    {
+                        PickupsMod(arg);
+                        Console.WriteLine();
+                        break;
+                    }
+                case FileType.Scaleformpreallocation_xml:
+                    {
+                        ScaleformPreallocationMod(arg);
+                        Console.WriteLine();
+                        break;
+                    }
+                case FileType.Taskdata_meta:
+                    {
+                        TaskdataMod(arg);
+                        Console.WriteLine();
+                        break;
+                    }
+                case FileType.Weapons_meta:
+                    {
+                        if (!WeaponsMod(arg) && deleteUnused) { File.Delete(arg); } //try to modify, if no relevant weapons contained within; delete
+                        Console.WriteLine();
+                        break;
+                    }
+                case FileType.Unknown:
+                    {
+                        if (deleteUnused) { File.Delete(arg); } //delete unused XML file
+                        break;
+                    }
             }
         }
 
-        private static void PrintLine(string text, ConsoleColor color, float justify)
+        public static void PrintLine(string text, ConsoleColor color, float justify)
         {
             if (text.Length > 0)
             {
-                Console.SetCursorPosition((int)((Console.WindowWidth - text.Length) * justify), Console.CursorTop);
+                int curPos = (int)((Console.WindowWidth - text.Length) * justify);
+                if (curPos < 0) { curPos = 0; }
+                if (curPos > Console.BufferWidth) { curPos = Console.BufferWidth; }
+                Console.SetCursorPosition(curPos, Console.CursorTop);
                 Console.ForegroundColor = color;
                 Console.WriteLine(text);
                 Console.ResetColor();
             }
         }
 
-        private static void PedAccuracyMod(XDocument xmlFile, string arg)
+        public static void Print(string text, ConsoleColor color, float justify)
+        {
+            if (text.Length > 0)
+            {
+                Console.SetCursorPosition((int)((Console.WindowWidth - text.Length) * justify), Console.CursorTop);
+                Console.ForegroundColor = color;
+                Console.Write(text);
+                Console.ResetColor();
+            }
+        }
+
+        private static void PedAccuracyMod(string arg)
         {
             PrintLine("Ped Accuracy Modifier File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f);
 
-            var query = from c in xmlFile.Elements("sPedAccuracyModifiers")
-                        select c;
-            foreach (XElement sPedAccuracyModifiers in query)
+            XDocument xmlFile;
+            try
             {
-                XElement globalMod = sPedAccuracyModifiers.Element("AI_GLOBAL_MODIFIER");
-                if (globalMod != null)
+                xmlFile = XDocument.Load(arg);
+                var query = from c in xmlFile.Elements("sPedAccuracyModifiers")
+                            select c;
+                foreach (XElement sPedAccuracyModifiers in query)
                 {
-                    globalMod.Attribute("value").Value = "1.000000";
-                    PrintLine("AI_GLOBAL_MODIFIER decreased to 1.000000", ConsoleColor.DarkGray, 0.0f);
+                    XElement globalMod = sPedAccuracyModifiers.Element("AI_GLOBAL_MODIFIER");
+                    if (globalMod != null)
+                    {
+                        globalMod.Attribute("value").Value = "1.000000";
+                        PrintLine("AI_GLOBAL_MODIFIER decreased to 1.000000", ConsoleColor.DarkGray, 0.0f);
+                    }
+                    XElement proVSAiMod = sPedAccuracyModifiers.Element("AI_PROFESSIONAL_PISTOL_VS_AI_MODIFIER");
+                    if (proVSAiMod != null)
+                    {
+                        proVSAiMod.Attribute("value").Value = "1.000000";
+                        PrintLine("AI_PROFESSIONAL_PISTOL_VS_AI_MODIFIER decreased to 1.000000", ConsoleColor.DarkGray, 0.0f);
+                    }
                 }
-                XElement proVSAiMod = sPedAccuracyModifiers.Element("AI_PROFESSIONAL_PISTOL_VS_AI_MODIFIER");
-                if (proVSAiMod != null)
-                {
-                    proVSAiMod.Attribute("value").Value = "1.000000";
-                    PrintLine("AI_PROFESSIONAL_PISTOL_VS_AI_MODIFIER decreased to 1.000000", ConsoleColor.DarkGray, 0.0f);
-                }
+                xmlFile.Save(arg + (Debug ? "test" : ""));
             }
-            xmlFile.Save(arg + (Debug ? "test" : ""));
+            catch
+            {
+                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+            }
         }
 
-        private static void PedDamageMod(XDocument xmlFile, string arg)
+        private static void PedDamageMod(string arg)
         {
             PrintLine("Ped Damage Data File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f);
 
-            var query = from c in xmlFile.Elements("CPedDamageData")
-                        select c;
-            foreach (XElement CPedDamageData in query)
+            XDocument xmlFile;
+            try
             {
-                XElement loResTDist = CPedDamageData.Element("LowResTargetDistanceCutoff");
-                if (loResTDist != null)
+                xmlFile = XDocument.Load(arg);
+                var query = from c in xmlFile.Elements("CPedDamageData")
+                            select c;
+                foreach (XElement CPedDamageData in query)
                 {
-                    loResTDist.Attribute("value").Value = "300.000000";
-                    PrintLine("LowResTargetDistanceCutoff increased to 300.000000", ConsoleColor.DarkGray, 0.0f);
+                    XElement loResTDist = CPedDamageData.Element("LowResTargetDistanceCutoff");
+                    if (loResTDist != null)
+                    {
+                        loResTDist.Attribute("value").Value = "300.000000";
+                        PrintLine("LowResTargetDistanceCutoff increased to 300.000000", ConsoleColor.DarkGray, 0.0f);
+                    }
+                    XElement ScarNum = CPedDamageData.Element("NumWoundsToScarsOnDeathSP");
+                    if (ScarNum != null)
+                    {
+                        ScarNum.Attribute("value").Value = "20";
+                        PrintLine("NumWoundsToScarsOnDeathSP increased to 20", ConsoleColor.DarkGray, 0.0f);
+                    }
+                    XElement WoundNum = CPedDamageData.Element("MaxPlayerBloodWoundsSP");
+                    if (WoundNum != null)
+                    {
+                        WoundNum.Attribute("value").Value = "200";
+                        PrintLine("MaxPlayerBloodWoundsSP increased to 200", ConsoleColor.DarkGray, 0.0f);
+                    }
                 }
-                XElement ScarNum = CPedDamageData.Element("NumWoundsToScarsOnDeathSP");
-                if (ScarNum != null)
-                {
-                    ScarNum.Attribute("value").Value = "20";
-                    PrintLine("NumWoundsToScarsOnDeathSP increased to 20", ConsoleColor.DarkGray, 0.0f);
-                }
-                XElement WoundNum = CPedDamageData.Element("MaxPlayerBloodWoundsSP");
-                if (WoundNum != null)
-                {
-                    WoundNum.Attribute("value").Value = "200";
-                    PrintLine("MaxPlayerBloodWoundsSP increased to 200", ConsoleColor.DarkGray, 0.0f);
-                }
+                xmlFile.Save(arg + (Debug ? "test" : ""));
             }
-            xmlFile.Save(arg + (Debug ? "test" : ""));
+            catch
+            {
+                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+            }
         }
 
-        private static void PedHealthMod(XDocument xmlFile, string arg)
+        private static void PedHealthMod(string arg)
         {
             PrintLine("Health Config File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f);
 
-            var query = from c in xmlFile.Elements("CHealthConfigInfoManager").Elements("aHealthConfig").Elements("Item")
-                        select c;
-            foreach (XElement CHealthConfigInfoManager in query)
+            XDocument xmlFile;
+            try
             {
-                bool disableMeleeOneshot = false;
-                PrintLine(CHealthConfigInfoManager.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
-                XElement fHealthThresh = CHealthConfigInfoManager.Element("FatiguedHealthThreshold");
-                if (fHealthThresh != null)
+                xmlFile = XDocument.Load(arg);
+                var query = from c in xmlFile.Elements("CHealthConfigInfoManager").Elements("aHealthConfig").Elements("Item")
+                            select c;
+                foreach (XElement CHealthConfigInfoManager in query)
                 {
-                    if (float.Parse(fHealthThresh.Attribute("value").Value, CultureInfo.InvariantCulture.NumberFormat) > 100.000000f)
+                    bool disableMeleeOneshot = false;
+                    PrintLine(CHealthConfigInfoManager.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
+                    XElement fHealthThresh = CHealthConfigInfoManager.Element("FatiguedHealthThreshold");
+                    if (fHealthThresh != null)
                     {
-                        disableMeleeOneshot = true;
-                        fHealthThresh.Attribute("value").Value = "100.000000";
-                        PrintLine("   FatiguedHealthThreshold set to 100.000000", ConsoleColor.DarkGray, 0.0f);
-                    }
-                }
-                XElement hHealthThresh = CHealthConfigInfoManager.Element("HurtHealthThreshold");
-                if (hHealthThresh != null)
-                {
-                    if (float.Parse(hHealthThresh.Attribute("value").Value, CultureInfo.InvariantCulture.NumberFormat) > 100.000000f)
-                    {
-                        disableMeleeOneshot = true;
-                        hHealthThresh.Attribute("value").Value = "100.000000";
-                        PrintLine("   HurtHealthThreshold set to 100.000000", ConsoleColor.DarkGray, 0.0f);
-                    }
-                }
-                if (disableMeleeOneshot)
-                {
-                    XElement meleeFatal = CHealthConfigInfoManager.Element("MeleeCardinalFatalAttackCheck");
-                    if (meleeFatal != null)
-                    {
-                        if (meleeFatal.Attribute("value").Value == "true")
+                        if (float.Parse(fHealthThresh.Attribute("value").Value, CultureInfo.InvariantCulture.NumberFormat) > 100.000000f)
                         {
-                            meleeFatal.Attribute("value").Value = "false";
-                            PrintLine("   MeleeCardinalFatalAttackCheck disabled.", ConsoleColor.DarkGray, 0.0f);
+                            disableMeleeOneshot = true;
+                            fHealthThresh.Attribute("value").Value = "100.000000";
+                            PrintLine("   FatiguedHealthThreshold set to 100.000000", ConsoleColor.DarkGray, 0.0f);
                         }
                     }
+                    XElement hHealthThresh = CHealthConfigInfoManager.Element("HurtHealthThreshold");
+                    if (hHealthThresh != null)
+                    {
+                        if (float.Parse(hHealthThresh.Attribute("value").Value, CultureInfo.InvariantCulture.NumberFormat) > 100.000000f)
+                        {
+                            disableMeleeOneshot = true;
+                            hHealthThresh.Attribute("value").Value = "100.000000";
+                            PrintLine("   HurtHealthThreshold set to 100.000000", ConsoleColor.DarkGray, 0.0f);
+                        }
+                    }
+                    if (disableMeleeOneshot)
+                    {
+                        XElement meleeFatal = CHealthConfigInfoManager.Element("MeleeCardinalFatalAttackCheck");
+                        if (meleeFatal != null)
+                        {
+                            if (meleeFatal.Attribute("value").Value == "true")
+                            {
+                                meleeFatal.Attribute("value").Value = "false";
+                                PrintLine("   MeleeCardinalFatalAttackCheck disabled.", ConsoleColor.DarkGray, 0.0f);
+                            }
+                        }
+                    }
+
+                    Console.WriteLine();
                 }
-                
-                Console.WriteLine();
+                xmlFile.Save(arg + (Debug ? "test" : ""));
             }
-            xmlFile.Save(arg + (Debug ? "test" : ""));
+            catch
+            {
+                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+            }
         }
 
-        private static void PickupsMod(XDocument xmlFile, string arg)
+        private static void PickupsMod(string arg)
         {
             PrintLine("Pickup Data File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f);
 
-            var query = from c in xmlFile.Elements("CPickupDataManager").Elements("pickupData").Elements("Item")
-                        select c;
-            foreach (XElement CPickupData in query)
+            XDocument xmlFile;
+            try
             {
-                var typ = CPickupData.Attribute("type").Value;
-                if (typ == "CPickupData")
+                xmlFile = XDocument.Load(arg);
+                var query = from c in xmlFile.Elements("CPickupDataManager").Elements("pickupData").Elements("Item")
+                            select c;
+                foreach (XElement CPickupData in query)
                 {
-
-                    PrintLine(CPickupData.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
-                    XElement ERewards = CPickupData.Element("Rewards");
-                    if (ERewards.HasElements)
+                    var typ = CPickupData.Attribute("type").Value;
+                    if (typ == "CPickupData")
                     {
-                        ERewards.Elements().Remove();
-                        PrintLine("   Rewards removed.", ConsoleColor.DarkGray, 0.0f);
-                    }
 
-                    XElement EPickupFlags = CPickupData.Element("PickupFlags");
-                    if (EPickupFlags.Value.Contains("RequiresButtonPressToPickup"))
-                    {
-                        EPickupFlags.Value = EPickupFlags.Value.Replace("RequiresButtonPressToPickup", String.Empty);
-                        PrintLine("   RequiresButtonPressToPickup removed.", ConsoleColor.DarkGray, 0.0f);
+                        PrintLine(CPickupData.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
+                        XElement ERewards = CPickupData.Element("Rewards");
+                        if (ERewards.HasElements)
+                        {
+                            ERewards.Elements().Remove();
+                            PrintLine("   Rewards removed.", ConsoleColor.DarkGray, 0.0f);
+                        }
+
+                        XElement EPickupFlags = CPickupData.Element("PickupFlags");
+                        if (EPickupFlags.Value.Contains("RequiresButtonPressToPickup"))
+                        {
+                            EPickupFlags.Value = EPickupFlags.Value.Replace("RequiresButtonPressToPickup", String.Empty);
+                            PrintLine("   RequiresButtonPressToPickup removed.", ConsoleColor.DarkGray, 0.0f);
+                        }
                     }
+                    Console.WriteLine();
                 }
-                Console.WriteLine();
+                xmlFile.Save(arg + (Debug ? "test" : ""));
             }
-            xmlFile.Save(arg + (Debug ? "test" : ""));
+            catch
+            {
+                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+            }
         }
 
-        private static void ScaleformPreallocationMod(XDocument xmlFile, string arg)
+        private static void ScaleformPreallocationMod(string arg)
         {
             //<movie name="PLAYER_NAME_02" peakSize="288" granularity="16" sfalloc="true">
             //	<SFAlloc>
@@ -771,16 +925,38 @@ namespace GunplayMetaEditor
             //</movie>
             PrintLine("Scaleform Preallocation File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f);
 
-            XElement ScaleformPreallocation = xmlFile.Element("ScaleformPreallocation");
-            if (ScaleformPreallocation != null)
+            XDocument xmlFile;
+            try
             {
-                string fmt = "00";
-                for (int i = 1; i < 17; i++)
+                xmlFile = XDocument.Load(arg);
+                XElement ScaleformPreallocation = xmlFile.Element("ScaleformPreallocation");
+                if (ScaleformPreallocation != null)
                 {
+                    string fmt = "00";
+                    for (int i = 1; i < 17; i++)
+                    {
+                        ScaleformPreallocation.Add
+                            (
+                            new XElement("movie",
+                                new XAttribute("name", "PICKUP_DISPLAY_" + i.ToString(fmt)),
+                                new XAttribute("peakSize", "288"),
+                                new XAttribute("granularity", "16"),
+                                new XAttribute("sfalloc", "true"),
+                                new XElement("SFAlloc",
+                                    new XElement("Size", new XAttribute("value", "16")),
+                                    new XElement("Count", new XAttribute("value", "10"))
+                                ),
+                                new XElement("SFAlloc",
+                                    new XElement("Size", new XAttribute("value", "32")),
+                                    new XElement("Count", new XAttribute("value", "1"))
+                                )
+                            ));
+                        PrintLine("Added Preallocation Data for " + "PICKUP_DISPLAY_" + i.ToString(fmt), ConsoleColor.DarkGray, 0.0f);
+                    }
                     ScaleformPreallocation.Add
                         (
                         new XElement("movie",
-                            new XAttribute("name", "PICKUP_DISPLAY_" + i.ToString(fmt)),
+                            new XAttribute("name", "ECG_DISPLAY"),
                             new XAttribute("peakSize", "288"),
                             new XAttribute("granularity", "16"),
                             new XAttribute("sfalloc", "true"),
@@ -793,272 +969,521 @@ namespace GunplayMetaEditor
                                 new XElement("Count", new XAttribute("value", "1"))
                             )
                         ));
-                    PrintLine("Added Preallocation Data for " + "PICKUP_DISPLAY_" + i.ToString(fmt), ConsoleColor.DarkGray, 0.0f);
+                    PrintLine("Added Preallocation Data for " + "ECG_DISPLAY", ConsoleColor.DarkGray, 0.0f);
                 }
-                ScaleformPreallocation.Add
-                    (
-                    new XElement("movie",
-                        new XAttribute("name", "ECG_DISPLAY"),
-                        new XAttribute("peakSize", "288"),
-                        new XAttribute("granularity", "16"),
-                        new XAttribute("sfalloc", "true"),
-                        new XElement("SFAlloc",
-                            new XElement("Size", new XAttribute("value", "16")),
-                            new XElement("Count", new XAttribute("value", "10"))
-                        ),
-                        new XElement("SFAlloc",
-                            new XElement("Size", new XAttribute("value", "32")),
-                            new XElement("Count", new XAttribute("value", "1"))
-                        )
-                    ));
-                PrintLine("Added Preallocation Data for " + "ECG_DISPLAY", ConsoleColor.DarkGray, 0.0f);
-            }
 
-            xmlFile.Save(arg + (Debug ? "test" : ""));
+                xmlFile.Save(arg + (Debug ? "test" : ""));
+            }
+            catch
+            {
+                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+            }
         }
 
-        private static void TaskdataMod(XDocument xmlFile, string arg)
+        private static void TaskdataMod(string arg)
         {
             PrintLine("Task Data Info File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f);
 
-            var query = from c in xmlFile.Elements("CTaskDataInfoManager").Elements("aTaskData").Elements("Item")
-                        select c;
-            foreach (XElement CTaskDataInfo in query)
+            XDocument xmlFile;
+            try
             {
-                var typ = CTaskDataInfo.Attribute("type").Value;
-                if (typ == "CTaskDataInfo")
+                xmlFile = XDocument.Load(arg);
+                var query = from c in xmlFile.Elements("CTaskDataInfoManager").Elements("aTaskData").Elements("Item")
+                            select c;
+                foreach (XElement CTaskDataInfo in query)
                 {
-                    if (CTaskDataInfo.Element("Name").Value == "STANDARD_PED")
+                    var typ = CTaskDataInfo.Attribute("type").Value;
+                    if (typ == "CTaskDataInfo")
                     {
-                        PrintLine(CTaskDataInfo.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
-                        XElement EFlags = CTaskDataInfo.Element("Flags");
-                        if (EFlags.Value.Contains("PreferFleeOnPavements"))
+                        if (CTaskDataInfo.Element("Name").Value == "STANDARD_PED")
                         {
-                            EFlags.Value = EFlags.Value.Replace("PreferFleeOnPavements", String.Empty);
-                            PrintLine("   PreferFleeOnPavements removed.", ConsoleColor.DarkGray, 0.0f);
+                            PrintLine(CTaskDataInfo.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
+                            XElement EFlags = CTaskDataInfo.Element("Flags");
+                            if (EFlags.Value.Contains("PreferFleeOnPavements"))
+                            {
+                                EFlags.Value = EFlags.Value.Replace("PreferFleeOnPavements", String.Empty);
+                                PrintLine("   PreferFleeOnPavements removed.", ConsoleColor.DarkGray, 0.0f);
+                            }
                         }
                     }
                 }
+                xmlFile.Save(arg + (Debug ? "test" : ""));
             }
-            xmlFile.Save(arg + (Debug ? "test" : ""));
+            catch
+            {
+                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+            }
         }
 
-        private static void WeaponsMod(XDocument xmlFile, string arg)
+        private static bool WeaponsMod(string arg)
         {
             PrintLine("Weapon Info File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f);
 
-            var query = from c in xmlFile.Elements("CWeaponInfoBlob").Elements("Infos")
-                        select c;
-            foreach (XElement Info in query)
+            XDocument xmlFile;
+            try
             {
-                bool insertAmmoHere = false;
-                var que = from a in Info.Elements("Item").Elements("Infos").Elements("Item")
-                            select a;
-                foreach (XElement CWeaponInfo in que)
+                int changesMade = 0;
+                xmlFile = XDocument.Load(arg);
+                var query = from c in xmlFile.Elements("CWeaponInfoBlob").Elements("Infos")
+                            select c;
+                foreach (XElement Info in query)
                 {
-                    var typ = CWeaponInfo.Attribute("type").Value;
-                    if (typ == "CAmmoInfo" && Path.GetFileName(arg).ToLower() == "weapons.meta")
+                    bool insertAmmoHere = false;
+                    var que = from a in Info.Elements("Item").Elements("Infos").Elements("Item")
+                              select a;
+                    foreach (XElement CWeaponInfo in que)
                     {
-                        insertAmmoHere = true;
+                        var typ = CWeaponInfo.Attribute("type").Value;
+                        if (typ == "CAmmoInfo" && Path.GetFileName(arg).ToLower() == "weapons.meta")
+                        {
+                            if (!insertAmmoHere)
+                            {
+                                insertAmmoHere = true;
+                                changesMade++;
+                            }
+                        }
+                        //if (typ == "CAmmoProjectileInfo") //disabled until can remove auto-trajectory for thrown weapons as well
+                        //{
+                        //    PrintLine(CWeaponInfo.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
+
+                        //    XElement EFlags = CWeaponInfo.Element("ProjectileFlags");
+                        //    if (EFlags.Value.Contains("AlignWithTrajectory"))
+                        //    {
+                        //        EFlags.Value = EFlags.Value.Replace("AlignWithTrajectory", String.Empty);
+                        //        PrintLine("   Automatic Trajectory Adjustment Disabled.", ConsoleColor.DarkGray, 0.0f);
+                        //    }
+                        //    Console.WriteLine();
+                        //}
+
+                        if (typ == "CWeaponInfo")
+                        {
+                            if (!CWeaponInfo.Elements("DamageType").Any() || (CWeaponInfo.Element("DamageType").Value != "BULLET" && CWeaponInfo.Element("DamageType").Value != "MELEE"))
+                            {
+                                continue;
+                            }
+                            else
+                            {
+                                changesMade++;
+                            }
+
+                            PrintLine(CWeaponInfo.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
+
+                            if (usingRGS)
+                            {
+                                XElement EAudio = CWeaponInfo.Element("Audio");
+                                if (EAudio != null)
+                                {
+                                    switch (CWeaponInfo.Element("Name").Value)
+                                    {
+                                        case "WEAPON_ASSAULTRIFLE":
+                                            {
+                                                EAudio.Value = "AUDIO_ITEM_HEAVYRIFLE";
+                                                break;
+                                            }
+                                        case "WEAPON_ADVANCEDRIFLE":
+                                            {
+                                                EAudio.Value = "AUDIO_ITEM_BULLPUPRIFLE";
+                                                break;
+                                            }
+                                        case "WEAPON_MG":
+                                            {
+                                                EAudio.Value = "AUDIO_ITEM_ASSAULTMG";
+                                                break;
+                                            }
+                                        case "WEAPON_COMBATMG ":
+                                            {
+                                                EAudio.Value = "AUDIO_ITEM_COMBATMG_MK2";
+                                                break;
+                                            }
+                                    }
+                                }
+                            }
+
+                            XElement ETracerFx = CWeaponInfo.Element("Fx").Element("TracerFx");
+                            if (ETracerFx != null)
+                            {
+                                if (ETracerFx.Value != "")
+                                {
+                                    ETracerFx.Value = "";
+                                    PrintLine("   Tracer Effects removed.", ConsoleColor.DarkGray, 0.0f);
+                                }
+                            }
+
+                            XElement EFlashlightShadows = CWeaponInfo.Element("Fx").Element("FlashFxLightCastsShadows");
+                            if (EFlashlightShadows != null)
+                            {
+                                if (EFlashlightShadows.Attribute("value").Value != "true")
+                                {
+                                    EFlashlightShadows.Attribute("value").Value = "true";
+                                    PrintLine("   Flash Shadows Enabled.", ConsoleColor.DarkGray, 0.0f);
+                                }
+                            }
+
+                            var q = from k in CWeaponInfo.Elements()
+                                    select k;
+                            foreach (XElement EInfo in q)
+                            {
+                                if (EInfo.Name == "FireType")
+                                {
+                                    if (EInfo.Value == "INSTANT_HIT")
+                                    {
+                                        EInfo.Value = "DELAYED_HIT";
+                                        PrintLine("   FireType set to DELAYED_HIT.", ConsoleColor.DarkGray, 0.0f);
+                                    }
+                                }
+                                if (EInfo.Name == "RecoilShakeAmplitude")
+                                {
+                                    if (EInfo.Attribute("value").Value != "0.000000")
+                                    {
+                                        EInfo.Attribute("value").Value = "0.000000";
+                                        PrintLine("   Stock Recoil Disabled.", ConsoleColor.DarkGray, 0.0f);
+                                    }
+                                }
+                                if (EInfo.Name == "HeadShotDamageModifierAI")
+                                {
+                                    if (EInfo.Attribute("value").Value != "1.000000")
+                                    {
+                                        EInfo.Attribute("value").Value = "1.000000";
+                                        PrintLine("   Stock AI Headshots Disabled.", ConsoleColor.DarkGray, 0.0f);
+                                    }
+                                }
+                                if (EInfo.Name == "HeadShotDamageModifierPlayer")
+                                {
+                                    if (EInfo.Attribute("value").Value != "1.000000")
+                                    {
+                                        EInfo.Attribute("value").Value = "1.000000";
+                                        PrintLine("   Stock Player Headshots Disabled.", ConsoleColor.DarkGray, 0.0f);
+                                    }
+                                }
+                                if (EInfo.Name == "HitLimbsDamageModifier")
+                                {
+                                    if (EInfo.Attribute("value").Value != "1.000000")
+                                    {
+                                        EInfo.Attribute("value").Value = "1.000000";
+                                        PrintLine("   Stock Limb Damage Modifier Disabled.", ConsoleColor.DarkGray, 0.0f);
+                                    }
+                                }
+                                if (EInfo.Name == "NetworkHitLimbsDamageModifier")
+                                {
+                                    if (EInfo.Attribute("value").Value != "1.000000")
+                                    {
+                                        EInfo.Attribute("value").Value = "1.000000";
+                                        PrintLine("   Stock Net Limb Damage Modifier Disabled.", ConsoleColor.DarkGray, 0.0f);
+                                    }
+                                }
+                                if (EInfo.Name == "LightlyArmouredDamageModifier")
+                                {
+                                    if (EInfo.Attribute("value").Value != "1.000000")
+                                    {
+                                        EInfo.Attribute("value").Value = "1.000000";
+                                        PrintLine("   Stock Armor Damage Modifier Disabled.", ConsoleColor.DarkGray, 0.0f);
+                                    }
+                                }
+                            }
+                            Console.WriteLine();
+                        }
                     }
-                    //if (typ == "CAmmoProjectileInfo") //disabled until can remove auto-trajectory for thrown weapons as well
-                    //{
-                    //    PrintLine(CWeaponInfo.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
 
-                    //    XElement EFlags = CWeaponInfo.Element("ProjectileFlags");
-                    //    if (EFlags.Value.Contains("AlignWithTrajectory"))
-                    //    {
-                    //        EFlags.Value = EFlags.Value.Replace("AlignWithTrajectory", String.Empty);
-                    //        PrintLine("   Automatic Trajectory Adjustment Disabled.", ConsoleColor.DarkGray, 0.0f);
-                    //    }
-                    //    Console.WriteLine();
-                    //}
-
-                    if (typ == "CWeaponInfo")
+                    if (insertAmmoHere)
                     {
-                        PrintLine(CWeaponInfo.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
+                        var ammoList = new List<KeyValuePair<string, int>>();               //    mm            -       ci      -       *2.16 for in-mag size
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_57X28", 120));     //7.95 x 40.50      - 0.1226809147 
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_556X45", 120));    //9.60 x 57.40      - 0.2535377905
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_545X39", 120));    //10.00 x 57.00     - 0.2731892669
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_58X42", 120));     //10.40 x 58.00     - 0.3006652076
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_762X39", 120));    //11.35 x 56.00     - 0.3457550419
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_338", 120));       //11.90 x 70.00     - 0.4750954778
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_762X51", 120));    //11.90 x 71.10     - 0.4818825386
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_93X64", 120));     //12.88 x 85.60     - 0.68060331003
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_408", 120));       //16.18 X 115.50    - 1.449197977
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_50BMG", 30));      //20.40 x 138.00    - 2.7525052688
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_127X108", 120));   //21.75 x 147.50    - 3.344254346
 
-                        if (usingRGS)
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_22LR", 120));      //5.70 x 25.40      - 0.0395525397
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_38SPC", 60));      //9.60 x 39.00      - 0.1722645374
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_9MM", 120));       //9.93 x 29.69      - 0.1403131153
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_40SW", 120));      //10.80 x 28.80     - 0.1610007748
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_10MM", 120));      //10.80 x 32.00     - 0.1788898853
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_45ACP", 120));     //12.20 x 32.40     - 0.2311286512
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_45LC", 120));      //12.20 x 40.60     - 0.2896241816
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_50AE", 120));      //13.90 x 40.90     - 0.3787402063
+
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_20G", 30));        //15.60 x 63.50     - 0.74064762303
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_20GSLUG", 30));
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_12G", 30));        //16.90 x 63.50     - 0.86923258492
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_12GSLUG", 30));
+
+                        ammoList.Add(new KeyValuePair<string, int>("AMMO_18MM", 20));
+
+                        foreach (KeyValuePair<string, int> ammo in ammoList)
                         {
-                            XElement EAudio = CWeaponInfo.Element("Audio");
-                            if (EAudio != null)
+                            bool addAmmo = true;
+                            foreach (XElement element in Info.Element("Item").Element("Infos").Elements("Item"))
                             {
-                                switch (CWeaponInfo.Element("Name").Value)
+                                if (element.Element("Name").Value == ammo.Key)
                                 {
-                                    case "WEAPON_ASSAULTRIFLE":
-                                        {
-                                            EAudio.Value = "AUDIO_ITEM_HEAVYRIFLE";
-                                            break;
-                                        }
-                                    case "WEAPON_ADVANCEDRIFLE":
-                                        {
-                                            EAudio.Value = "AUDIO_ITEM_BULLPUPRIFLE";
-                                            break;
-                                        }
-                                    case "WEAPON_MG":
-                                        {
-                                            EAudio.Value = "AUDIO_ITEM_ASSAULTMG";
-                                            break;
-                                        }
-                                    case "WEAPON_COMBATMG ":
-                                        {
-                                            EAudio.Value = "AUDIO_ITEM_COMBATMG_MK2";
-                                            break;
-                                        }
+                                    addAmmo = false;
+                                    break;
                                 }
+                            }
+                            if (addAmmo)
+                            {
+                                Info.Element("Item").Element("Infos").Add
+                                    (
+                                    new XElement("Item",
+                                        new XAttribute("type", "CAmmoInfo"),
+                                        new XElement("Name", ammo.Key),
+                                        new XElement("Model"),
+                                        new XElement("Audio"),
+                                        new XElement("Slot"),
+                                        new XElement("AmmoMax", new XAttribute("value", ammo.Value.ToString())),
+                                        new XElement("AmmoMax50", new XAttribute("value", ammo.Value.ToString())),
+                                        new XElement("AmmoMax100", new XAttribute("value", ammo.Value.ToString())),
+                                        new XElement("AmmoMaxMP", new XAttribute("value", ammo.Value.ToString())),
+                                        new XElement("AmmoMax50MP", new XAttribute("value", ammo.Value.ToString())),
+                                        new XElement("AmmoMax100MP", new XAttribute("value", ammo.Value.ToString()))
+                                    ));
+                                PrintLine("Added Ammo Data for " + ammo.Key, ConsoleColor.DarkGray, 0.0f);
                             }
                         }
-
-                        XElement ETracerFx = CWeaponInfo.Element("Fx").Element("TracerFx");
-                        if (ETracerFx != null)
-                        {
-                            if (ETracerFx.Value != "")
-                            {
-                                ETracerFx.Value = "";
-                                PrintLine("   Tracer Effects removed.", ConsoleColor.DarkGray, 0.0f);
-                            }
-                        }
-
-                        XElement EFlashlightShadows = CWeaponInfo.Element("Fx").Element("FlashFxLightCastsShadows");
-                        if (EFlashlightShadows != null)
-                        {
-                            if (EFlashlightShadows.Attribute("value").Value != "true")
-                            {
-                                EFlashlightShadows.Attribute("value").Value = "true";
-                                PrintLine("   Flash Shadows Enabled.", ConsoleColor.DarkGray, 0.0f);
-                            }
-                        }
-
-                        var q = from k in CWeaponInfo.Elements()
-                                  select k;
-                        foreach (XElement EInfo in q)
-                        {
-                            if (EInfo.Name == "FireType")
-                            {
-                                if (EInfo.Value == "INSTANT_HIT")
-                                {
-                                    EInfo.Value = "DELAYED_HIT";
-                                    PrintLine("   FireType set to DELAYED_HIT.", ConsoleColor.DarkGray, 0.0f);
-                                }
-                            }
-                            if (EInfo.Name == "RecoilShakeAmplitude")
-                            {
-                                if (EInfo.Attribute("value").Value != "0.000000")
-                                {
-                                    EInfo.Attribute("value").Value = "0.000000";
-                                    PrintLine("   Stock Recoil Disabled.", ConsoleColor.DarkGray, 0.0f);
-                                }
-                            }
-                            if (EInfo.Name == "HeadShotDamageModifierAI")
-                            {
-                                if (EInfo.Attribute("value").Value != "1.000000")
-                                {
-                                    EInfo.Attribute("value").Value = "1.000000";
-                                    PrintLine("   Stock AI Headshots Disabled.", ConsoleColor.DarkGray, 0.0f);
-                                }
-                            }
-                            if (EInfo.Name == "HeadShotDamageModifierPlayer")
-                            {
-                                if (EInfo.Attribute("value").Value != "1.000000")
-                                {
-                                    EInfo.Attribute("value").Value = "1.000000";
-                                    PrintLine("   Stock Player Headshots Disabled.", ConsoleColor.DarkGray, 0.0f);
-                                }
-                            }
-                            if (EInfo.Name == "HitLimbsDamageModifier")
-                            {
-                                if (EInfo.Attribute("value").Value != "1.000000")
-                                {
-                                    EInfo.Attribute("value").Value = "1.000000";
-                                    PrintLine("   Stock Limb Damage Modifier Disabled.", ConsoleColor.DarkGray, 0.0f);
-                                }
-                            }
-                            if (EInfo.Name == "NetworkHitLimbsDamageModifier")
-                            {
-                                if (EInfo.Attribute("value").Value != "1.000000")
-                                {
-                                    EInfo.Attribute("value").Value = "1.000000";
-                                    PrintLine("   Stock Net Limb Damage Modifier Disabled.", ConsoleColor.DarkGray, 0.0f);
-                                }
-                            }
-                            if (EInfo.Name == "LightlyArmouredDamageModifier")
-                            {
-                                if (EInfo.Attribute("value").Value != "1.000000")
-                                {
-                                    EInfo.Attribute("value").Value = "1.000000";
-                                    PrintLine("   Stock Armor Damage Modifier Disabled.", ConsoleColor.DarkGray, 0.0f);
-                                }
-                            }
-                        }
-                        Console.WriteLine();
                     }
                 }
-                
-                if (insertAmmoHere)
+                if (changesMade > 0)
                 {
-                    var ammoList = new List<KeyValuePair<string, int>>();               //    mm            -       ci      -       *2.16 for in-mag size
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_57X28", 120));     //7.95 x 40.50      - 0.1226809147 
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_556X45", 120));    //9.60 x 57.40      - 0.2535377905
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_545X39", 120));    //10.00 x 57.00     - 0.2731892669
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_58X42", 120));     //10.40 x 58.00     - 0.3006652076
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_762X39", 120));    //11.35 x 56.00     - 0.3457550419
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_338", 120));       //11.90 x 70.00     - 0.4750954778
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_762X51", 120));    //11.90 x 71.10     - 0.4818825386
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_93X64", 120));     //12.88 x 85.60     - 0.68060331003
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_408", 120));       //16.18 X 115.50    - 1.449197977
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_50BMG", 30));      //20.40 x 138.00    - 2.7525052688
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_127X108", 120));   //21.75 x 147.50    - 3.344254346
-
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_22LR", 120));      //5.70 x 25.40      - 0.0395525397
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_38SPC", 60));      //9.60 x 39.00      - 0.1722645374
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_9MM", 120));       //9.93 x 29.69      - 0.1403131153
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_40SW", 120));      //10.80 x 28.80     - 0.1610007748
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_10MM", 120));      //10.80 x 32.00     - 0.1788898853
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_45ACP", 120));     //12.20 x 32.40     - 0.2311286512
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_45LC", 120));      //12.20 x 40.60     - 0.2896241816
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_50AE", 120));      //13.90 x 40.90     - 0.3787402063
-
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_20G", 30));        //15.60 x 63.50     - 0.74064762303
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_20GSLUG", 30));
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_12G", 30));        //16.90 x 63.50     - 0.86923258492
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_12GSLUG", 30));
-
-                    ammoList.Add(new KeyValuePair<string, int>("AMMO_18MM", 20));
-                    
-                    foreach (KeyValuePair<string, int> ammo in ammoList)
-                    {
-                        bool addAmmo = true;
-                        foreach (XElement element in Info.Element("Item").Element("Infos").Elements("Item"))
-                        {
-                            if (element.Element("Name").Value == ammo.Key)
-                            {
-                                addAmmo = false;
-                                break;
-                            }
-                        }
-                        if (addAmmo)
-                        {
-                            Info.Element("Item").Element("Infos").Add
-                                (
-                                new XElement("Item",
-                                    new XAttribute("type", "CAmmoInfo"),
-                                    new XElement("Name", ammo.Key),
-                                    new XElement("Model"),
-                                    new XElement("Audio"),
-                                    new XElement("Slot"),
-                                    new XElement("AmmoMax", new XAttribute("value", ammo.Value.ToString())),
-                                    new XElement("AmmoMax50", new XAttribute("value", ammo.Value.ToString())),
-                                    new XElement("AmmoMax100", new XAttribute("value", ammo.Value.ToString())),
-                                    new XElement("AmmoMaxMP", new XAttribute("value", ammo.Value.ToString())),
-                                    new XElement("AmmoMax50MP", new XAttribute("value", ammo.Value.ToString())),
-                                    new XElement("AmmoMax100MP", new XAttribute("value", ammo.Value.ToString()))
-                                ));
-                            PrintLine("Added Ammo Data for " + ammo.Key, ConsoleColor.DarkGray, 0.0f);
-                        }
-                    }
+                    xmlFile.Save(arg + (Debug ? "test" : ""));
+                    return true;
+                }
+                else
+                {
+                    return false;
                 }
             }
-            xmlFile.Save(arg + (Debug ? "test" : ""));
+            catch
+            {
+                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+                return false;
+            }
+        }
+
+        public static bool Question(string q)
+        {
+            bool answered = false;
+            bool answer = false;
+            int startTick = Environment.TickCount;
+            bool started = false;
+            Console.CursorVisible = false;
+            while (!started)
+            {
+                if ((Environment.TickCount - startTick) < 1000)
+                {
+                    Print(q + " [y/n]", Environment.TickCount % 200 < 100 ? ConsoleColor.Red : ConsoleColor.White, 0.0f);
+                    Thread.Sleep(0);
+                }
+                else
+                {
+                    PrintLine(q + " [y/n]", ConsoleColor.Yellow, 0.0f);
+                    Console.CursorVisible = true;
+                    started = true;
+                }
+            }
+            while (!answered)
+            {
+
+
+                ConsoleKeyInfo Key = Console.ReadKey(false);
+                switch (Key.Key)
+                {
+                    case ConsoleKey.Y:
+                        {
+                            PrintLine("Yes.", ConsoleColor.Green, 0.0f);
+                            Console.WriteLine();
+                            answer = true;
+                            answered = true;
+                            break;
+                        }
+                    case ConsoleKey.N:
+                        {
+                            PrintLine("No.", ConsoleColor.Red, 0.0f);
+                            Console.WriteLine();
+                            answer = false;
+                            answered = true;
+                            break;
+                        }
+                }
+
+            }
+            return answer;
+        }
+    }
+
+    
+
+    public static class GTAFolder
+    {
+        public static string CurrentGTAFolder { get; private set; } = Settings.Default.GTADirectory;
+
+        public static bool ValidateGTAFolder(string folder, out string failReason)
+        {
+            failReason = "";
+
+            if (string.IsNullOrWhiteSpace(folder))
+            {
+                failReason = "No directory specified";
+                return false;
+            }
+
+            if (!Directory.Exists(folder))
+            {
+                failReason = $"directory \"{folder}\" does not exist";
+                return false;
+            }
+
+            if (!File.Exists(folder + @"\gta5.exe"))
+            {
+                failReason = $"GTA5.exe not found in directory \"{folder}\"";
+                return false;
+            }
+
+            return true;
+        }
+
+        public static bool ValidateGTAFolder(string folder)
+        {
+            string reason;
+            return ValidateGTAFolder(folder, out reason);
+        }
+
+        public static bool IsCurrentGTAFolderValid() => ValidateGTAFolder(CurrentGTAFolder);
+
+        public static bool UpdateGTAFolder(bool UseCurrentIfValid = false)
+        {
+            if (UseCurrentIfValid && IsCurrentGTAFolderValid())
+            {
+                return true;
+            }
+
+            string origFolder = CurrentGTAFolder;
+            string folder = CurrentGTAFolder;
+            string SelectedFolder = CurrentGTAFolder;
+            
+            string source;
+            string autoFolder = AutoDetectFolder(out source);
+            Program.PrintLine($"Auto-detected game directory \"{autoFolder}\" from {source}.", ConsoleColor.White, 0.0f);
+            
+            if (autoFolder != null && Program.Question("Continue with auto-detected directory?"))
+            {
+                SelectedFolder = autoFolder;
+            }
+
+            if (Directory.Exists(SelectedFolder))
+            {
+                folder = SelectedFolder;
+            }
+
+            string failReason;
+            if (ValidateGTAFolder(folder, out failReason))
+            {
+                SetGTAFolder(folder);
+                if (folder != origFolder)
+                {
+                    Program.PrintLine($"Successfully changed GTA Directory to \"{folder}\"", ConsoleColor.Green, 0.0f); 
+                }
+                return true;
+            }
+            else
+            {
+                Program.PrintLine($"Directory \"{folder}\" is not a valid GTA directory: \"{failReason}\"", ConsoleColor.Red, 0.0f);
+                if (Program.Question($"Do you want to try choosing a different directory?"))
+                {
+                    return UpdateGTAFolder(false);
+                }
+                else
+                {
+                    return false;
+                }
+            }
+        }
+
+        public static bool SetGTAFolder(string folder)
+        {
+            if (ValidateGTAFolder(folder))
+            {
+                CurrentGTAFolder = folder;
+                Settings.Default.GTADirectory = folder;
+                Settings.Default.Save();
+                return true;
+            }
+
+            return false;
+        }
+
+        public static string GetCurrentGTAFolderWithTrailingSlash() => CurrentGTAFolder.EndsWith(@"\") ? CurrentGTAFolder : CurrentGTAFolder + @"\";
+
+        public static bool AutoDetectFolder(out Dictionary<string, string> matches)
+        {
+            matches = new Dictionary<string, string>();
+
+            if (ValidateGTAFolder(CurrentGTAFolder))
+            {
+                matches.Add("Saved Settings", CurrentGTAFolder);
+            }
+
+            RegistryKey baseKey32 = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry32);
+            string steamPathValue = baseKey32.OpenSubKey(@"Software\Rockstar Games\GTAV")?.GetValue("InstallFolderSteam") as string;
+            string retailPathValue = baseKey32.OpenSubKey(@"Software\Rockstar Games\Grand Theft Auto V")?.GetValue("InstallFolder") as string;
+            string oivPathValue = Registry.CurrentUser.OpenSubKey(@"Software\NewTechnologyStudio\OpenIV.exe\BrowseForFolder")?.GetValue("game_path_Five_pc") as string;
+
+            if (steamPathValue?.EndsWith("\\GTAV") == true)
+            {
+                steamPathValue = steamPathValue.Substring(0, steamPathValue.LastIndexOf("\\GTAV"));
+            }
+
+            if (ValidateGTAFolder(steamPathValue))
+            {
+                matches.Add("Steam", steamPathValue);
+            }
+
+            if (ValidateGTAFolder(retailPathValue))
+            {
+                matches.Add("Retail", retailPathValue);
+            }
+
+            if (ValidateGTAFolder(oivPathValue))
+            {
+                matches.Add("OpenIV", oivPathValue);
+            }
+
+            return matches.Count > 0;
+        }
+
+        public static string AutoDetectFolder(out string source)
+        {
+            source = null;
+            Dictionary<string, string> matches;
+            if (AutoDetectFolder(out matches))
+            {
+                var match = matches.First();
+                source = match.Key;
+                return match.Value;
+            }
+
+            return null;
+        }
+
+        public static string AutoDetectFolder()
+        {
+            string _;
+            return AutoDetectFolder(out _);
+        }
+
+        public static void UpdateSettings()
+        {
+            if (string.IsNullOrEmpty(Settings.Default.Key) && (GTA5Keys.PC_AES_KEY != null))
+            {
+                Settings.Default.Key = Convert.ToBase64String(GTA5Keys.PC_AES_KEY);
+                Settings.Default.Save();
+                
+            }
         }
     }
 }
