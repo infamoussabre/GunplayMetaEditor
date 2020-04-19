@@ -368,7 +368,7 @@ namespace GunplayMetaEditor
     }
     class Program
     {
-        const bool Debug = true; //|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+        const bool Debug = false; //|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
         private static bool usingRGS;
 
         static void Main(string[] args)
@@ -382,8 +382,9 @@ namespace GunplayMetaEditor
             }
 
             PrintLine("Loading Keys...", ConsoleColor.Cyan, 0.0f);
-            GTA5Keys.LoadFromPath(Properties.Settings.Default.GTADirectory);
-
+            GTA5Keys.LoadFromPath(Properties.Settings.Default.GTADirectory, Settings.Default.Key);
+            Settings.Default.Key = Convert.ToBase64String(GTA5Keys.PC_AES_KEY);
+            Settings.Default.Save();
             List<string> arguments = args.ToList();
 
             foreach (string arg in args)
@@ -424,7 +425,14 @@ namespace GunplayMetaEditor
                         {
                             case FileType.RAGEPackageFile:
                                 {
-                                    UnpackRPF(Path.GetFullPath(arguments[i]));
+                                    string fPath = Path.GetFullPath(arguments[i]);
+                                    string relPath = MakeRelativePath(Directory.GetCurrentDirectory(), fPath);
+                                    RpfFile file = new RpfFile(fPath, relPath);
+
+                                    string found = FindFileInRpf("weap_revolver.ypt", file);
+                                    if (found == "") { PrintLine("Not Found.", ConsoleColor.Red, 0.0f); }
+                                    else { PrintLine(Directory.GetCurrentDirectory() + found, ConsoleColor.Green, 0.0f); }
+                                    
                                     break;
                                 }
                             default:
@@ -446,6 +454,320 @@ namespace GunplayMetaEditor
             }
         }
 
+        static void ReadRpfFileHeader(RpfFile file, BinaryReader br)
+        {
+            file.CurrentFileReader = br;
+
+            file.StartPos = br.BaseStream.Position;
+
+            file.Version = br.ReadUInt32(); //RPF Version - GTAV should be 0x52504637 (1380992567)
+            file.EntryCount = br.ReadUInt32(); //Number of Entries
+            file.NamesLength = br.ReadUInt32();
+            file.Encryption = (RpfEncryption)br.ReadUInt32(); //0x04E45504F (1313165391): none;  0x0ffffff9 (268435449): AES
+
+            if (file.Version != 0x52504637)
+            {
+                throw new Exception("Invalid Resource - not GTAV!");
+            }
+
+            byte[] entriesdata = br.ReadBytes((int)file.EntryCount * 16); //4x uints each
+            byte[] namesdata = br.ReadBytes((int)file.NamesLength);
+
+            switch (file.Encryption)
+            {
+                case RpfEncryption.NONE: //no encryption
+                case RpfEncryption.OPEN: //OpenIV style RPF with unencrypted TOC
+                    break;
+                case RpfEncryption.AES:
+                    entriesdata = GTACrypto.DecryptAES(entriesdata);
+                    namesdata = GTACrypto.DecryptAES(namesdata);
+                    file.IsAESEncrypted = true;
+                    break;
+                case RpfEncryption.NG:
+                    entriesdata = GTACrypto.DecryptNG(entriesdata, file.Name, (uint)file.FileSize);
+                    namesdata = GTACrypto.DecryptNG(namesdata, file.Name, (uint)file.FileSize);
+                    file.IsNGEncrypted = true;
+                    break;
+                default: //unknown encryption type? assume NG.. never seems to get here
+                    entriesdata = GTACrypto.DecryptNG(entriesdata, file.Name, (uint)file.FileSize);
+                    namesdata = GTACrypto.DecryptNG(namesdata, file.Name, (uint)file.FileSize);
+                    break;
+            }
+
+
+            var entriesrdr = new DataReader(new MemoryStream(entriesdata));
+            var namesrdr = new DataReader(new MemoryStream(namesdata));
+            file.AllEntries = new List<RpfEntry>();
+            file.TotalFileCount = 0;
+            file.TotalFolderCount = 0;
+            file.TotalResourceCount = 0;
+            file.TotalBinaryFileCount = 0;
+
+            for (uint i = 0; i < file.EntryCount; i++)
+            {
+                //entriesrdr.Position += 4;
+                uint y = entriesrdr.ReadUInt32();
+                uint x = entriesrdr.ReadUInt32();
+                entriesrdr.Position -= 8;
+
+                RpfEntry e;
+
+                if (x == 0x7fffff00) //directory entry
+                {
+                    e = new RpfDirectoryEntry();
+                    file.TotalFolderCount++;
+                }
+                else if ((x & 0x80000000) == 0) //binary file entry
+                {
+                    e = new RpfBinaryFileEntry();
+                    file.TotalBinaryFileCount++;
+                    file.TotalFileCount++;
+                }
+                else //assume resource file entry
+                {
+                    e = new RpfResourceFileEntry();
+                    file.TotalResourceCount++;
+                    file.TotalFileCount++;
+                }
+
+                e.File = file;
+                e.H1 = y;
+                e.H2 = x;
+
+                e.Read(entriesrdr);
+
+                namesrdr.Position = e.NameOffset;
+                e.Name = namesrdr.ReadString();
+                e.NameLower = e.Name.ToLowerInvariant();
+
+                if ((e is RpfFileEntry) && string.IsNullOrEmpty(e.Name))
+                {
+                }
+                if ((e is RpfResourceFileEntry))// && string.IsNullOrEmpty(e.Name))
+                {
+                    var rfe = e as RpfResourceFileEntry;
+                    rfe.IsEncrypted = rfe.NameLower.EndsWith(".ysc");//any other way to know..?
+                }
+
+                file.AllEntries.Add(e);
+            }
+
+
+
+            file.Root = (RpfDirectoryEntry)file.AllEntries[0];
+            file.Root.Path = file.Path.ToLowerInvariant();// + "\\" + Root.Name;
+            var stack = new Stack<RpfDirectoryEntry>();
+            stack.Push(file.Root);
+            while (stack.Count > 0)
+            {
+                var item = stack.Pop();
+
+                int starti = (int)item.EntriesIndex;
+                int endi = (int)(item.EntriesIndex + item.EntriesCount);
+
+                for (int i = starti; i < endi; i++)
+                {
+                    RpfEntry e = file.AllEntries[i];
+                    e.Parent = item;
+                    if (e is RpfDirectoryEntry)
+                    {
+                        RpfDirectoryEntry rde = e as RpfDirectoryEntry;
+                        rde.Path = item.Path + "\\" + rde.NameLower;
+                        item.Directories.Add(rde);
+                        stack.Push(rde);
+                    }
+                    else if (e is RpfFileEntry)
+                    {
+                        RpfFileEntry rfe = e as RpfFileEntry;
+                        rfe.Path = item.Path + "\\" + rfe.NameLower;
+                        item.Files.Add(rfe);
+                    }
+                }
+            }
+
+            br.BaseStream.Position = file.StartPos;
+
+            file.CurrentFileReader = null;
+        }
+
+        public static void ScanRpfFileStructure(RpfFile file)
+        {
+            using (BinaryReader br = new BinaryReader(File.OpenRead(file.FilePath)))
+            {
+                try
+                {
+                    ScanRpfFileStructure(file, br);
+                }
+                catch (Exception ex)
+                {
+                    file.LastError = ex.ToString();
+                    file.LastException = ex;
+                    //errorLog(FilePath + ": " + LastError);
+                }
+            }
+        }
+
+        public static void ScanRpfFileStructure(RpfFile file, BinaryReader br)
+        {
+            ReadRpfFileHeader(file, br);
+
+            file.GrandTotalRpfCount = 1; //count this file..
+            file.GrandTotalFileCount = 1; //start with this one.
+            file.GrandTotalFolderCount = 0;
+            file.GrandTotalResourceCount = 0;
+            file.GrandTotalBinaryFileCount = 0;
+
+            file.Children = new List<RpfFile>();
+
+            //updateStatus?.Invoke("Scanning " + Path + "...");
+
+            foreach (RpfEntry entry in file.AllEntries)
+            {
+                try
+                {
+                    if (entry is RpfBinaryFileEntry)
+                    {
+                        RpfBinaryFileEntry binentry = entry as RpfBinaryFileEntry;
+
+                        //search all the sub resources for YSC files. (recurse!)
+                        string lname = binentry.NameLower;
+                        if (lname.EndsWith(".rpf"))
+                        {
+                            br.BaseStream.Position = file.StartPos + ((long)binentry.FileOffset * 512);
+
+                            long l = binentry.GetFileSize();
+
+                            RpfFile subfile = new RpfFile(binentry.Name, binentry.Path, l);
+                            subfile.Parent = file;
+                            subfile.ParentFileEntry = binentry;
+
+                            ScanRpfFileStructure(subfile, br);
+
+                            file.GrandTotalRpfCount += subfile.GrandTotalRpfCount;
+                            file.GrandTotalFileCount += subfile.GrandTotalFileCount;
+                            file.GrandTotalFolderCount += subfile.GrandTotalFolderCount;
+                            file.GrandTotalResourceCount += subfile.GrandTotalResourceCount;
+                            file.GrandTotalBinaryFileCount += subfile.GrandTotalBinaryFileCount;
+
+                            file.Children.Add(subfile);
+                        }
+                        else
+                        {
+                            //binary file that's not an rpf...
+                            file.GrandTotalBinaryFileCount++;
+                            file.GrandTotalFileCount++;
+                        }
+                    }
+                    else if (entry is RpfResourceFileEntry)
+                    {
+                        file.GrandTotalResourceCount++;
+                        file.GrandTotalFileCount++;
+                    }
+                    else if (entry is RpfDirectoryEntry)
+                    {
+                        file.GrandTotalFolderCount++;
+                    }
+
+
+                }
+                catch (Exception ex)
+                {
+                    //errorLog?.Invoke(entry.Path + ": " + ex.ToString());
+                }
+            }
+        }
+
+        public static string FindFileInRpf(string filename, RpfFile file)
+        {
+            using (BinaryReader br = new BinaryReader(File.OpenRead(file.FilePath)))
+            {
+                try
+                {
+                    string retval = FindFileInRpf(filename, file, br);
+                    if (retval != "") { return retval.Substring(retval.IndexOf('\\')); }
+                }
+                catch (Exception ex)
+                {
+                    file.LastError = ex.ToString();
+                    file.LastException = ex;
+                    //errorLog(FilePath + ": " + LastError);
+                }
+            }
+            return "";
+        }
+
+        public static string FindFileInRpf(string filename, RpfFile file, BinaryReader br)
+        {
+            ReadRpfFileHeader(file, br);
+
+            //file.GrandTotalRpfCount = 1; //count this file..
+            //file.GrandTotalFileCount = 1; //start with this one.
+            //file.GrandTotalFolderCount = 0;
+            //file.GrandTotalResourceCount = 0;
+            //file.GrandTotalBinaryFileCount = 0;
+
+            //file.Children = new List<RpfFile>();
+
+            //updateStatus?.Invoke("Scanning " + Path + "...");
+
+            foreach (RpfEntry entry in file.AllEntries)
+            {
+                try
+                {
+                    if (entry is RpfBinaryFileEntry)
+                    {
+                        RpfBinaryFileEntry binentry = entry as RpfBinaryFileEntry;
+
+                        //search all the sub resources for YSC files. (recurse!)
+                        string lname = binentry.NameLower;
+                        if (lname.EndsWith(".rpf"))
+                        {
+                            br.BaseStream.Position = file.StartPos + ((long)binentry.FileOffset * 512);
+
+                            long l = binentry.GetFileSize();
+
+                            RpfFile subfile = new RpfFile(binentry.Name, binentry.Path, l);
+                            subfile.Parent = file;
+                            subfile.ParentFileEntry = binentry;
+
+                            string recval = FindFileInRpf(filename, subfile, br);
+                            if (recval != "") { return recval; }
+
+                            //file.GrandTotalRpfCount += subfile.GrandTotalRpfCount;
+                            //file.GrandTotalFileCount += subfile.GrandTotalFileCount;
+                            //file.GrandTotalFolderCount += subfile.GrandTotalFolderCount;
+                            //file.GrandTotalResourceCount += subfile.GrandTotalResourceCount;
+                            //file.GrandTotalBinaryFileCount += subfile.GrandTotalBinaryFileCount;
+
+                            //file.Children.Add(subfile);
+                        }
+                        else
+                        {
+                            //binary file that's not an rpf...
+                            file.GrandTotalBinaryFileCount++;
+                            file.GrandTotalFileCount++;
+                        }
+                    }
+                    else if (entry is RpfResourceFileEntry)
+                    {
+                        file.GrandTotalResourceCount++;
+                        file.GrandTotalFileCount++;
+                    }
+                    else if (entry is RpfDirectoryEntry)
+                    {
+                        file.GrandTotalFolderCount++;
+                    }
+                    if (entry.NameLower == filename) { return entry.Path; }
+
+                }
+                catch (Exception ex)
+                {
+                    //errorLog?.Invoke(entry.Path + ": " + ex.ToString());
+                }
+            }
+            return "";
+        }
+
         public static void UnpackRPF(string fPath)
         {
             Action<string> status = null;//(x) => PrintLine(x, ConsoleColor.DarkCyan, 0.0f);
@@ -462,24 +784,25 @@ namespace GunplayMetaEditor
                 path = Path.GetDirectoryName(fPath) + path.Substring(path.IndexOf('\\'));
                 string directory = Path.GetDirectoryName(path);
                 Directory.CreateDirectory(directory);
-
-                byte[] data = file.ExtractFile(entry);
-                if (data != null)
+                try
                 {
-                    try
+                    byte[] data = file.ExtractFile(entry);
+                    if(data == null)
                     {
-                        File.WriteAllBytes(path, data);
-                        PrintLine(path, ConsoleColor.Magenta, 1.0f);
+                        continue;
                     }
-                    catch (Exception ex)
-                    {
-                        PrintLine("Error saving file " + path + ": " + ex.ToString(), ConsoleColor.Red, 1.0f);
-                        Console.ReadKey();
-                        return;
-                    }
+                    File.WriteAllBytes(path, data);
+                    PrintLine(path, ConsoleColor.Magenta, 1.0f);
+                }
+                catch (Exception ex)
+                {
+                    PrintLine("Error saving file " + path + ": " + ex.ToString(), ConsoleColor.Red, 1.0f);
+                    Console.ReadKey();
+                    return;
                 }
             }
         }
+        
 
         public static string MakeRelativePath(string fromPath, string toPath)
         {
