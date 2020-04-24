@@ -366,6 +366,67 @@ namespace GunplayMetaEditor
         Unknown
 
     }
+
+    struct GameFileInfo
+    {
+        FileType type;
+        public string name;
+        public string path;
+        public string dlcName;
+        public bool inMods;
+        public bool inUpdate;
+        public bool inDLC;
+        public bool inDLCPatch;
+
+        public GameFileInfo(string pth) : this()
+        {
+            name        = Path.GetFileNameWithoutExtension(pth);
+            path        = pth;
+            dlcName     = "";
+            inMods      = false;
+            inUpdate    = false;
+            inDLC       = false;
+            inDLCPatch  = false;
+
+            if (pth.ToLower().Contains(@"\mods\"))
+            {
+                inMods = true;
+            }
+
+            if (pth.ToLower().Contains(@"\update\"))
+            {
+                inUpdate = true;
+            }
+
+            if (pth.ToLower().Contains(@"\dlcpacks\"))
+            {
+                string searchstr = @"\dlcpacks\";
+                dlcName = (pth.ToLower().Substring(pth.ToLower().IndexOf(searchstr) + searchstr.Length)).Split('\\')[0];
+                inDLC = true;
+            }
+            else if (pth.ToLower().Contains(@"\dlc_patch\"))
+            {
+                string searchstr = @"\dlc_patch\";
+                dlcName = (pth.ToLower().Substring(pth.ToLower().IndexOf(searchstr) + searchstr.Length)).Split('\\')[0];
+                inDLC = true;
+                inDLCPatch = true;
+            }
+        }
+
+        /*
+        File importance
+
+        mods+dlcpatch
+        mods+dlc
+        mods
+        update+dlcpatch
+        update+dlc
+        update
+        dlc
+        base
+        */
+    }
+
     class Program
     {
         const bool Debug = false; //|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
@@ -429,10 +490,20 @@ namespace GunplayMetaEditor
                                     string relPath = MakeRelativePath(Directory.GetCurrentDirectory(), fPath);
                                     RpfFile file = new RpfFile(fPath, relPath);
 
-                                    string found = FindFileInRpf("weap_revolver.ypt", file);
-                                    if (found == "") { PrintLine("Not Found.", ConsoleColor.Red, 0.0f); }
-                                    else { PrintLine(Directory.GetCurrentDirectory() + found, ConsoleColor.Green, 0.0f); }
-                                    
+                                    //string found = FindNamedFileInRpf("xm_base_cia_data_desks.yft", file);
+                                    //if (found != "") { PrintLine(Directory.GetCurrentDirectory() + found, ConsoleColor.Green, 0.0f); } else { PrintLine("Not Found.", ConsoleColor.Red, 0.0f); }
+                                    List<GameFileInfo> fileList = FindTypedFilesInRpf(FileType.Weapons_meta, file);
+                                    if (fileList.Count > 0)
+                                    {
+                                        foreach (GameFileInfo a in fileList)
+                                        {
+                                            Print(a.name, ConsoleColor.Green, 0.0f);
+                                            Print(a.dlcName, ConsoleColor.Green, 0.25f);
+                                            PrintLine(a.path, ConsoleColor.Green, 1.0f);
+                                        }
+                                    }
+                                    else { PrintLine("Not Found.", ConsoleColor.Red, 0.0f); }
+
                                     break;
                                 }
                             default:
@@ -677,13 +748,73 @@ namespace GunplayMetaEditor
             }
         }
 
-        public static string FindFileInRpf(string filename, RpfFile file)
+        //public static string FindNewestFile(string filename)
+        //{
+        //    bool inMods = false;
+        //    bool inUpdate = false;
+        //    bool inBase = false;
+        //    bool overwritesFile = false; //backup overwritten file
+
+        //    if (inMods)
+        //    {
+        //        bool inDlcPatch = false;
+        //        bool inDlcPack = false;
+        //        bool inCore = false;
+
+        //        if (inDlcPack || inDlcPatch)
+        //        {
+        //            destination = DlcPatch;
+        //            if (inDlcPatch) { overwritesFile = true; }
+        //        }
+        //        if (inCore)
+        //        {
+        //            destination = Core;
+        //            overwritesFile = true;
+        //        }
+        //    }
+
+        //    if (inUpdate)
+        //    {
+        //        bool inDlcPatch = false;
+        //        bool inDlcPack = false;
+        //        bool inCore = false;
+
+        //        if (inDlcPack || inDlcPatch)
+        //        {
+        //            destination = DlcPatch;
+        //            if (inDlcPatch) { overwritesFile = true; }
+        //        }
+        //        if (inCore)
+        //        {
+        //            destination = Core;
+        //            overwritesFile = true;
+        //        }
+        //    }
+
+        //    if (inBase)
+        //    {
+        //        bool inDlcPack = false;
+        //        bool inCore = false;
+
+        //        if (inDlcPack)
+        //        {
+        //            destination = DlcPatch;
+        //        }
+        //        if (inCore)
+        //        {
+        //            destination = Core;
+        //        }
+        //    }
+        //    return "";
+        //}
+
+        public static string FindNamedFileInRpf(string filename, RpfFile file)
         {
             using (BinaryReader br = new BinaryReader(File.OpenRead(file.FilePath)))
             {
                 try
                 {
-                    string retval = FindFileInRpf(filename, file, br);
+                    string retval = FindNamedFileInRpf(filename, file, br);
                     if (retval != "") { return retval.Substring(retval.IndexOf('\\')); }
                 }
                 catch (Exception ex)
@@ -696,19 +827,9 @@ namespace GunplayMetaEditor
             return "";
         }
 
-        public static string FindFileInRpf(string filename, RpfFile file, BinaryReader br)
+        public static string FindNamedFileInRpf(string filename, RpfFile file, BinaryReader br)
         {
             ReadRpfFileHeader(file, br);
-
-            //file.GrandTotalRpfCount = 1; //count this file..
-            //file.GrandTotalFileCount = 1; //start with this one.
-            //file.GrandTotalFolderCount = 0;
-            //file.GrandTotalResourceCount = 0;
-            //file.GrandTotalBinaryFileCount = 0;
-
-            //file.Children = new List<RpfFile>();
-
-            //updateStatus?.Invoke("Scanning " + Path + "...");
 
             foreach (RpfEntry entry in file.AllEntries)
             {
@@ -730,32 +851,9 @@ namespace GunplayMetaEditor
                             subfile.Parent = file;
                             subfile.ParentFileEntry = binentry;
 
-                            string recval = FindFileInRpf(filename, subfile, br);
+                            string recval = FindNamedFileInRpf(filename, subfile, br);
                             if (recval != "") { return recval; }
-
-                            //file.GrandTotalRpfCount += subfile.GrandTotalRpfCount;
-                            //file.GrandTotalFileCount += subfile.GrandTotalFileCount;
-                            //file.GrandTotalFolderCount += subfile.GrandTotalFolderCount;
-                            //file.GrandTotalResourceCount += subfile.GrandTotalResourceCount;
-                            //file.GrandTotalBinaryFileCount += subfile.GrandTotalBinaryFileCount;
-
-                            //file.Children.Add(subfile);
                         }
-                        else
-                        {
-                            //binary file that's not an rpf...
-                            file.GrandTotalBinaryFileCount++;
-                            file.GrandTotalFileCount++;
-                        }
-                    }
-                    else if (entry is RpfResourceFileEntry)
-                    {
-                        file.GrandTotalResourceCount++;
-                        file.GrandTotalFileCount++;
-                    }
-                    else if (entry is RpfDirectoryEntry)
-                    {
-                        file.GrandTotalFolderCount++;
                     }
                     if (entry.NameLower == filename) { return entry.Path; }
 
@@ -766,6 +864,73 @@ namespace GunplayMetaEditor
                 }
             }
             return "";
+        }
+
+        public static List<GameFileInfo> FindTypedFilesInRpf(FileType type, RpfFile file)
+        {
+            List<GameFileInfo> files = new List<GameFileInfo>();
+
+            using (BinaryReader br = new BinaryReader(File.OpenRead(file.FilePath)))
+            {
+                try
+                {
+                    List<GameFileInfo> recval = FindTypedFilesInRpf(type, file, br);
+                    files.AddRange(recval);
+                }
+                catch (Exception ex)
+                {
+                    file.LastError = ex.ToString();
+                    file.LastException = ex;
+                    //errorLog(FilePath + ": " + LastError);
+                }
+            }
+            return files;
+        }
+
+        public static List<GameFileInfo> FindTypedFilesInRpf(FileType type, RpfFile file, BinaryReader br)
+        {
+            ReadRpfFileHeader(file, br);
+            List<GameFileInfo> fileList = new List<GameFileInfo>();
+
+            foreach (RpfEntry entry in file.AllEntries)
+            {
+                try
+                {
+                    if (entry is RpfBinaryFileEntry)
+                    {
+                        RpfBinaryFileEntry binentry = entry as RpfBinaryFileEntry;
+
+                        //search all the sub resources for YSC files. (recurse!)
+                        string lname = binentry.NameLower;
+                        if (lname.EndsWith(".rpf"))
+                        {
+                            br.BaseStream.Position = file.StartPos + ((long)binentry.FileOffset * 512);
+
+                            long l = binentry.GetFileSize();
+
+                            RpfFile subfile = new RpfFile(binentry.Name, binentry.Path, l);
+                            subfile.Parent = file;
+                            subfile.ParentFileEntry = binentry;
+
+                            List<GameFileInfo> recval = FindTypedFilesInRpf(type, subfile, br);
+                            fileList.AddRange(recval);
+                        }
+                    }
+                    
+                    FileType fType = GetFileType(file, entry);
+                    if (fType == type)
+                    {
+                        GameFileInfo newFileInfo = new GameFileInfo(entry.Path);
+                        fileList.Add(newFileInfo);
+                    }
+
+                }
+                catch (Exception ex)
+                {
+                    //errorLog?.Invoke(entry.Path + ": " + ex.ToString());
+                }
+            }
+            return fileList;
         }
 
         public static void UnpackRPF(string fPath)
@@ -978,6 +1143,51 @@ namespace GunplayMetaEditor
                     if (Path.GetFileNameWithoutExtension(path).ToLower().Contains("wantedtuning")) { fType = FileType.Wantedtuning_ymt; }
                 }
                 catch { }
+            }
+
+            return fType;
+        }
+
+        private static FileType GetFileType(RpfFile file, RpfEntry entry)
+        {
+            FileType fType = FileType.Unknown;
+            if (Path.GetExtension(entry.Name).ToLower() == ".rpf") { fType = FileType.RAGEPackageFile; }
+            else if (Path.GetExtension(entry.Name).ToLower() == ".meta")
+            {
+                XDocument xmlFile;
+                try
+                {
+                    var byteArray = file.ExtractFile((RpfFileEntry)entry);
+                    Stream stream = new MemoryStream(byteArray);
+                    xmlFile = XDocument.Load(stream);
+                    if (xmlFile.Elements("sPedAccuracyModifiers").Count() > 0) { fType = FileType.Pedaccuracy_meta; }
+                    else if (xmlFile.Elements("CHealthConfigInfoManager").Count() > 0) { fType = FileType.Pedhealth_meta; }
+                    else if (xmlFile.Elements("CPickupDataManager").Count() > 0) { fType = FileType.Pickups_meta; }
+                    else if (xmlFile.Elements("CTaskDataInfoManager").Count() > 0) { fType = FileType.Taskdata_meta; }
+                    else if (xmlFile.Elements("CWeaponInfoBlob").Count() > 0) { fType = FileType.Weapons_meta; }
+                }
+                catch (Exception ex)
+                {
+                }
+            }
+            else if (Path.GetExtension(entry.Name).ToLower() == ".xml")
+            {
+                XDocument xmlFile;
+                try
+                {
+                    var byteArray = file.ExtractFile((RpfFileEntry)entry);
+                    Stream stream = new MemoryStream(byteArray);
+                    xmlFile = XDocument.Load(stream);
+                    if (xmlFile.Elements("CPedDamageData").Count() > 0) { fType = FileType.Peddamage_xml; }
+                    else if (Path.GetFileNameWithoutExtension(entry.Name).ToLower() == "scaleformpreallocation" && xmlFile.Elements("ScaleformPreallocation").Count() > 0) { fType = FileType.Scaleformpreallocation_xml; }
+                }
+                catch (Exception ex)
+                {
+                }
+            }
+            else if (Path.GetExtension(entry.Name).ToLower() == ".ymt")
+            {
+                if (Path.GetFileNameWithoutExtension(entry.Name).ToLower().Contains("wantedtuning")) { fType = FileType.Wantedtuning_ymt; }
             }
 
             return fType;
