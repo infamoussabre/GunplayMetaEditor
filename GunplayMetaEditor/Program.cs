@@ -352,6 +352,7 @@ internal class SetScreenColorsDemo
 
 namespace GunplayMetaEditor
 {
+
     enum FileType
     {
         RAGEPackageFile,
@@ -435,8 +436,27 @@ namespace GunplayMetaEditor
         const bool Debug = false; //|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
         private static bool usingRGS;
 
+        const int MF_BYCOMMAND = 0x00000000;
+        const int SC_MINIMIZE = 0xF020;
+        const int SC_MAXIMIZE = 0xF030;
+        const int SC_SIZE = 0xF000;
+
+        [DllImport("user32.dll")]
+        public static extern int DeleteMenu(IntPtr hMenu, int nPosition, int wFlags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
+
+        [DllImport("kernel32.dll", ExactSpelling = true)]
+        private static extern IntPtr GetConsoleWindow();
+
         static void Main(string[] args)
         {
+            DeleteMenu(GetSystemMenu(GetConsoleWindow(), false), SC_MINIMIZE, MF_BYCOMMAND);
+            DeleteMenu(GetSystemMenu(GetConsoleWindow(), false), SC_MAXIMIZE, MF_BYCOMMAND);
+            DeleteMenu(GetSystemMenu(GetConsoleWindow(), false), SC_SIZE, MF_BYCOMMAND);
+            
+
             if (!GTAFolder.UpdateGTAFolder(Properties.Settings.Default.RememberGTADirectory))
             {
                 PrintLine("Could not start because no valid GTA 5 folder was selected.", ConsoleColor.Red, 0.0f);
@@ -444,7 +464,6 @@ namespace GunplayMetaEditor
                 Console.ReadKey();
                 return;
             }
-
             PrintLine("Loading Keys...", ConsoleColor.Cyan, 0.0f);
             GTA5Keys.LoadFromPath(Properties.Settings.Default.GTADirectory, Settings.Default.Key);
             Settings.Default.Key = Convert.ToBase64String(GTA5Keys.PC_AES_KEY);
@@ -495,14 +514,19 @@ namespace GunplayMetaEditor
 
                                     //string found = FindNamedFileInRpf("xm_base_cia_data_desks.yft", file);
                                     //if (found != "") { PrintLine(Directory.GetCurrentDirectory() + found, ConsoleColor.Green, 0.0f); } else { PrintLine("Not Found.", ConsoleColor.Red, 0.0f); }
-                                    List<GameFileInfo> fileList = FindTypedFilesInRpf(FileType.Weapons_meta, file);
+                                    List<GameFileInfo> fileList;
+                                    using (var progress = new ProgressBar(Console.BufferWidth-2))
+                                    {
+                                        fileList = FindModifiableFilesInRpf(file, progress);
+                                    }
+                                    Console.WriteLine();
                                     if (fileList.Count > 0)
                                     {
                                         foreach (GameFileInfo a in fileList)
                                         {
                                             Print(a.name, ConsoleColor.Green, 0.0f);
                                             Print(a.dlcName, ConsoleColor.Green, 0.25f);
-                                            PrintLine(a.path, ConsoleColor.Green, 1.0f);
+                                            PrintLine(a.path.Substring(a.path.IndexOf("\\")), ConsoleColor.Green, 1.0f);
                                         }
                                     }
                                     else { PrintLine("Not Found.", ConsoleColor.Red, 0.0f); }
@@ -518,9 +542,22 @@ namespace GunplayMetaEditor
                     }
                     else if (Directory.Exists(arguments[i]))
                     {
-                        BackupDirectory(arguments[i]);
-                        ModifyAllInDirectory(arguments[i]);
-                        RemoveEmptySubdirectories(arguments[i]);
+                        List<GameFileInfo> fileList;
+                        using (var progress = new ProgressBar(Console.BufferWidth - 2))
+                        {
+                            fileList = FindModifiableFilesInDirectory(arguments[i], true, progress);
+                        }
+                        Console.WriteLine();
+                        if (fileList.Count > 0)
+                        {
+                            foreach (GameFileInfo a in fileList)
+                            {
+                                Print(a.name, ConsoleColor.Green, 0.0f);
+                                Print(a.dlcName, ConsoleColor.Green, 0.25f);
+                                PrintLine(a.path.Substring(a.path.IndexOf("\\")), ConsoleColor.Green, 1.0f);
+                            }
+                        }
+                        else { PrintLine("Not Found.", ConsoleColor.Red, 0.0f); }
                     }
                 }
 
@@ -869,7 +906,7 @@ namespace GunplayMetaEditor
             return "";
         }
 
-        public static List<GameFileInfo> FindModifiableFilesInRpf(RpfFile file)
+        public static List<GameFileInfo> FindModifiableFilesInRpf(RpfFile file, IProgress<double> progress)
         {
             List<GameFileInfo> files = new List<GameFileInfo>();
 
@@ -877,7 +914,7 @@ namespace GunplayMetaEditor
             {
                 try
                 {
-                    List<GameFileInfo> recval = FindModifiableFilesInRpf(file, br);
+                    List<GameFileInfo> recval = FindModifiableFilesInRpf(file, br, progress);
                     files.AddRange(recval);
                 }
                 catch (Exception ex)
@@ -890,13 +927,14 @@ namespace GunplayMetaEditor
             return files;
         }
 
-        public static List<GameFileInfo> FindModifiableFilesInRpf(RpfFile file, BinaryReader br)
+        public static List<GameFileInfo> FindModifiableFilesInRpf(RpfFile file, BinaryReader br, IProgress<double> progress)
         {
             ReadRpfFileHeader(file, br);
             List<GameFileInfo> fileList = new List<GameFileInfo>();
-
+            
             foreach (RpfEntry entry in file.AllEntries)
             {
+                progress?.Report((double)file.AllEntries.IndexOf(entry) / (double)(file.AllEntries.Count-1));
                 try
                 {
                     if (entry is RpfBinaryFileEntry)
@@ -914,19 +952,26 @@ namespace GunplayMetaEditor
                             RpfFile subfile = new RpfFile(binentry.Name, binentry.Path, l);
                             subfile.Parent = file;
                             subfile.ParentFileEntry = binentry;
-
-                            List<GameFileInfo> recval = FindModifiableFilesInRpf(subfile, br);
+                            var progressHandler = new Progress<double>(value =>
+                            {
+                                progress?.Report((((double)file.AllEntries.IndexOf(entry))+value) / (double)(file.AllEntries.Count - 1));
+                            });
+                            var recurseProgress = progressHandler as IProgress<double>;
+                            List<GameFileInfo> recval = FindModifiableFilesInRpf(subfile, br, recurseProgress);
                             fileList.AddRange(recval);
                         }
                     }
 
                     FileType fType = GetFileType(file, entry);
-                    if (ModifyFile())
+                    if (fType != FileType.RAGEPackageFile)
                     {
-                        GameFileInfo newFileInfo = new GameFileInfo(entry.Path);
-                        fileList.Add(newFileInfo);
+                        byte[] byteArray = file.ExtractFile((RpfFileEntry)entry);
+                        if (ModifyFile(entry.Path, byteArray, true))
+                        {
+                            GameFileInfo newFileInfo = new GameFileInfo(entry.Path);
+                            fileList.Add(newFileInfo);
+                        }
                     }
-
                 }
                 catch (Exception ex)
                 {
@@ -1003,21 +1048,53 @@ namespace GunplayMetaEditor
             return fileList;
         }
 
-        public static List<GameFileInfo> FindTypedFilesInDirectory(FileType type, string directory, bool recurse)
+        public static List<GameFileInfo> FindModifiableFilesInDirectory(string directory, bool recurse, IProgress<double> progress)
         {
+            double totalFiles = Directory.GetFiles(directory).LongLength;
+            double totalDirectories = Directory.GetDirectories(directory).LongLength;
+            double totalItems = (double)(totalFiles + (recurse ? totalDirectories : 0.0));
             List<GameFileInfo> fileList = new List<GameFileInfo>();
-            foreach (string subDir in Directory.GetDirectories(directory))
+            if (recurse)
             {
-                if (recurse)
+                foreach (string subDir in Directory.GetDirectories(directory))
                 {
-                    List<GameFileInfo> recval = FindTypedFilesInDirectory(type, subDir, recurse);
+                    progress?.Report((double)Array.IndexOf(Directory.GetDirectories(directory), subDir) / totalItems);
+
+                    var progressHandler = new Progress<double>(value =>
+                    {
+                        progress?.Report((((double)Array.IndexOf(Directory.GetDirectories(directory), subDir)) + value) / totalItems);
+                    });
+                    var recurseProgress = progressHandler as IProgress<double>;
+                    List<GameFileInfo> recval = FindModifiableFilesInDirectory(subDir, recurse, recurseProgress);
                     fileList.AddRange(recval);
                 }
+            }
+            foreach (string file in Directory.GetFiles(directory))
+            {
+                progress?.Report(((double)Array.IndexOf(Directory.GetFiles(directory), file) + (recurse ? totalDirectories : 0.0)) / totalItems);
+                FileType fType = GetFileType(file);
 
-                if (Directory.GetFiles(subDir).Length == 0 &&
-                    Directory.GetDirectories(subDir).Length == 0)
+                if (fType == FileType.RAGEPackageFile) //Search Through RPF File for modifiable files
                 {
-                    Directory.Delete(subDir, false);
+                    string fPath = Path.GetFullPath(file);
+                    string relPath = MakeRelativePath(Directory.GetCurrentDirectory(), fPath);
+                    RpfFile rpf = new RpfFile(fPath, relPath);
+                    var progressHandler = new Progress<double>(value =>
+                    {
+                        progress?.Report(((double)Array.IndexOf(Directory.GetFiles(directory), file) + (recurse ? totalDirectories : 0.0) + value) / totalItems);
+                    });
+                    var recurseProgress = progressHandler as IProgress<double>;
+                    List<GameFileInfo> recval = FindModifiableFilesInRpf(rpf, recurseProgress);
+                    fileList.AddRange(recval);
+                }
+                else
+                {
+                    byte[] byteArray = File.ReadAllBytes(file);
+                    if (ModifyFile(file, byteArray, true)) //Check if file is modifiable
+                    {
+                        GameFileInfo newFileInfo = new GameFileInfo(file);
+                        fileList.Add(newFileInfo);
+                    }
                 }
             }
             return fileList;
@@ -1058,7 +1135,6 @@ namespace GunplayMetaEditor
             }
         }
         
-
         public static string MakeRelativePath(string fromPath, string toPath)
         {
             if (string.IsNullOrEmpty(fromPath)) throw new ArgumentNullException("fromPath");
@@ -1326,68 +1402,65 @@ namespace GunplayMetaEditor
             return fType;
         }
 
-        private static bool ModifyFile(string arg, bool test)
+        private static bool ModifyFile(string path, byte[] file, bool test)
         {
-            FileType fType = GetFileType(arg);
-
+            FileType fType = GetFileType(path, file);
+            bool retval = false;
             switch (fType)
             {
                 case FileType.Pedaccuracy_meta:
                     {
-                        bool retval = PedAccuracyMod(arg, test);
-                        if (!test) Console.WriteLine();
-                        return retval;
+                        retval = PedAccuracyMod(path, file, test);
                         break;
                     }
                 case FileType.Peddamage_xml:
                     {
-                        bool retval = PedDamageMod(arg, test);
-                        if (!test) Console.WriteLine();
-                        return retval;
+                        retval = PedDamageMod(path, file, test);
                         break;
                     }
                 case FileType.Pedhealth_meta:
                     {
-                        bool retval = PedHealthMod(arg, test);
-                        if (!test) Console.WriteLine();
-                        return retval;
+                        retval = PedHealthMod(path, file, test);
                         break;
                     }
                 case FileType.Pickups_meta:
                     {
-                        bool retval = PickupsMod(arg, test);
-                        if (!test) Console.WriteLine();
-                        return retval;
+                        retval = PickupsMod(path, file, test);
                         break;
                     }
                 case FileType.Scaleformpreallocation_xml:
                     {
-                        bool retval = ScaleformPreallocationMod(arg, test);
-                        if (!test) Console.WriteLine();
-                        return retval;
+                        retval = ScaleformPreallocationMod(path, file, test);
                         break;
                     }
                 case FileType.Taskdata_meta:
                     {
-                        bool retval = TaskdataMod(arg, test);
-                        if (!test) Console.WriteLine();
-                        return retval;
+                        retval = TaskdataMod(path, file, test);
                         break;
                     }
                 case FileType.Weapons_meta:
                     {
-                        bool retval = WeaponsMod(arg, test);
-                        if (!test) Console.WriteLine();
-                        return retval;
+                        retval = WeaponsMod(path, file, test);
                         break;
                     }
                 case FileType.Unknown:
                     {
-                        return false;
                         break;
                     }
             }
-            return false;
+            if (!test && retval)
+            {
+                Console.WriteLine();
+                //xmlFile.Save(arg + (Debug ? "test" : ""));
+                //save file
+            }
+            return retval;
+        }
+
+        private static bool ModifyFile(string arg, bool test)
+        {
+            byte[] file = File.ReadAllBytes(arg);
+            return ModifyFile(arg, file, test);
         }
 
         public static void PrintLine(string text, ConsoleColor color, float justify)
@@ -1395,6 +1468,7 @@ namespace GunplayMetaEditor
             if (text.Length > 0)
             {
                 int curPos = (int)((Console.WindowWidth - text.Length) * justify);
+                if (curPos + text.Length == Console.WindowWidth) { curPos -= 1; }
                 if (curPos < 0) { curPos = 0; }
                 if (curPos > Console.BufferWidth) { curPos = Console.BufferWidth; }
                 Console.SetCursorPosition(curPos, Console.CursorTop);
@@ -1408,11 +1482,70 @@ namespace GunplayMetaEditor
         {
             if (text.Length > 0)
             {
-                Console.SetCursorPosition((int)((Console.WindowWidth - text.Length) * justify), Console.CursorTop);
+                int curPos = (int)((Console.WindowWidth - text.Length) * justify);
+                if (curPos + text.Length == Console.WindowWidth) { curPos -= 1; }
+                if (curPos < 0) { curPos = 0; }
+                if (curPos > Console.BufferWidth) { curPos = Console.BufferWidth; }
+                Console.SetCursorPosition(curPos, Console.CursorTop);
                 Console.ForegroundColor = color;
                 Console.Write(text);
                 Console.ResetColor();
             }
+        }
+
+        public static bool Question(string q)
+        {
+            bool answered = false;
+            bool answer = false;
+            int startTick = Environment.TickCount;
+            bool started = false;
+            Console.CursorVisible = false;
+            while (!started)
+            {
+                if ((Environment.TickCount - startTick) < 1000)
+                {
+                    Print(q + " [y/n]", Environment.TickCount % 200 < 100 ? ConsoleColor.Red : ConsoleColor.White, 0.0f);
+                    Thread.Sleep(0);
+                }
+                else
+                {
+                    PrintLine(q + " [y/n]", ConsoleColor.Yellow, 0.0f);
+                    Console.CursorVisible = true;
+                    started = true;
+                }
+            }
+            while (!answered)
+            {
+
+
+                ConsoleKeyInfo Key = Console.ReadKey(false);
+                switch (Key.Key)
+                {
+                    case ConsoleKey.Y:
+                        {
+                            PrintLine("Yes.", ConsoleColor.Green, 0.0f);
+                            Console.WriteLine();
+                            answer = true;
+                            answered = true;
+                            break;
+                        }
+                    case ConsoleKey.N:
+                        {
+                            PrintLine("No.", ConsoleColor.Red, 0.0f);
+                            Console.WriteLine();
+                            answer = false;
+                            answered = true;
+                            break;
+                        }
+                }
+
+            }
+            return answer;
+        }
+
+        public static float Lerp(float firstFloat, float secondFloat, float by)
+        {
+            return firstFloat * (1 - by) + secondFloat * by;
         }
 
         public static bool SubelementsCheckRemove(XElement Xele, bool test, string message = "")
@@ -1490,15 +1623,16 @@ namespace GunplayMetaEditor
             return retval;
         }
 
-        private static bool PedAccuracyMod(string arg, bool test)
+        private static bool PedAccuracyMod(string path, byte[] file, bool test)
         {
-            if (!test) { PrintLine("Ped Accuracy Modifier File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f); }
+            if (!test) { PrintLine("Ped Accuracy Modifier File - " + Path.GetFileName(path).ToUpper(), ConsoleColor.Green, 0.5f); }
 
             XDocument xmlFile;
             try
             {
                 int changesMade = 0;
-                xmlFile = XDocument.Load(arg);
+                Stream stream = new MemoryStream(file);
+                xmlFile = XDocument.Load(stream);
                 var query = from c in xmlFile.Elements("sPedAccuracyModifiers")
                             select c;
                 foreach (XElement sPedAccuracyModifiers in query)
@@ -1516,7 +1650,6 @@ namespace GunplayMetaEditor
                 }
                 if (changesMade > 0)
                 {
-                    if (!test) { xmlFile.Save(arg + (Debug ? "test" : "")); }
                     return true;
                 }
                 else
@@ -1526,20 +1659,21 @@ namespace GunplayMetaEditor
             }
             catch
             {
-                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+                PrintLine("Error parsing " + Path.GetFileName(path).ToUpper() + "as XML", ConsoleColor.Red, 0.5f);
                 return false;
             }
         }
 
-        private static bool PedDamageMod(string arg, bool test)
+        private static bool PedDamageMod(string path, byte[] file, bool test)
         {
-            if (!test) { PrintLine("Ped Damage Data File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f); }
+            if (!test) { PrintLine("Ped Damage Data File - " + Path.GetFileName(path).ToUpper(), ConsoleColor.Green, 0.5f); }
 
             XDocument xmlFile;
             try
             {
                 int changesMade = 0;
-                xmlFile = XDocument.Load(arg);
+                Stream stream = new MemoryStream(file);
+                xmlFile = XDocument.Load(stream);
                 var query = from c in xmlFile.Elements("CPedDamageData")
                             select c;
                 foreach (XElement CPedDamageData in query)
@@ -1562,7 +1696,6 @@ namespace GunplayMetaEditor
                 }
                 if (changesMade > 0)
                 {
-                    if (!test) { xmlFile.Save(arg + (Debug ? "test" : "")); }
                     return true;
                 }
                 else
@@ -1572,20 +1705,21 @@ namespace GunplayMetaEditor
             }
             catch
             {
-                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+                PrintLine("Error parsing " + Path.GetFileName(path).ToUpper() + "as XML", ConsoleColor.Red, 0.5f);
                 return false;
             }
         }
 
-        private static bool PedHealthMod(string arg, bool test)
+        private static bool PedHealthMod(string path, byte[] file, bool test)
         {
-            if (!test) { PrintLine("Health Config File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f); }
+            if (!test) { PrintLine("Health Config File - " + Path.GetFileName(path).ToUpper(), ConsoleColor.Green, 0.5f); }
 
             XDocument xmlFile;
             try
             {
                 int changesMade = 0;
-                xmlFile = XDocument.Load(arg);
+                Stream stream = new MemoryStream(file);
+                xmlFile = XDocument.Load(stream);
                 var query = from c in xmlFile.Elements("CHealthConfigInfoManager").Elements("aHealthConfig").Elements("Item")
                             select c;
                 foreach (XElement CHealthConfigInfoManager in query)
@@ -1630,11 +1764,10 @@ namespace GunplayMetaEditor
                         }
                     }
 
-                    Console.WriteLine();
+                    if (!test) { Console.WriteLine(); }
                 }
                 if (changesMade > 0)
                 {
-                    if (!test) { xmlFile.Save(arg + (Debug ? "test" : "")); }
                     return true;
                 }
                 else
@@ -1644,20 +1777,21 @@ namespace GunplayMetaEditor
             }
             catch
             {
-                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+                PrintLine("Error parsing " + Path.GetFileName(path).ToUpper() + "as XML", ConsoleColor.Red, 0.5f);
                 return false;
             }
         }
 
-        private static bool PickupsMod(string arg, bool test)
+        private static bool PickupsMod(string path, byte[] file, bool test)
         {
-            if (!test) { PrintLine("Pickup Data File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f); }
+            if (!test) { PrintLine("Pickup Data File - " + Path.GetFileName(path).ToUpper(), ConsoleColor.Green, 0.5f); }
 
             XDocument xmlFile;
             try
             {
                 int changesMade = 0;
-                xmlFile = XDocument.Load(arg);
+                Stream stream = new MemoryStream(file);
+                xmlFile = XDocument.Load(stream);
                 var query = from c in xmlFile.Elements("CPickupDataManager").Elements("pickupData").Elements("Item")
                             select c;
                 foreach (XElement CPickupData in query)
@@ -1677,7 +1811,6 @@ namespace GunplayMetaEditor
                 }
                 if (changesMade > 0)
                 {
-                    if (!test) { xmlFile.Save(arg + (Debug ? "test" : "")); }
                     return true;
                 }
                 else
@@ -1687,12 +1820,12 @@ namespace GunplayMetaEditor
             }
             catch
             {
-                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+                PrintLine("Error parsing " + Path.GetFileName(path).ToUpper() + "as XML", ConsoleColor.Red, 0.5f);
                 return false;
             }
         }
 
-        private static bool ScaleformPreallocationMod(string arg, bool test)
+        private static bool ScaleformPreallocationMod(string path, byte[] file, bool test)
         {
             //<movie name="PLAYER_NAME_02" peakSize="288" granularity="16" sfalloc="true">
             //	<SFAlloc>
@@ -1704,13 +1837,14 @@ namespace GunplayMetaEditor
             //    <Count value="1"/>
             //  </SFAlloc>
             //</movie>
-            if (!test) { PrintLine("Scaleform Preallocation File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f); }
+            if (!test) { PrintLine("Scaleform Preallocation File - " + Path.GetFileName(path).ToUpper(), ConsoleColor.Green, 0.5f); }
 
             XDocument xmlFile;
             try
             {
                 int changesMade = 0;
-                xmlFile = XDocument.Load(arg);
+                Stream stream = new MemoryStream(file);
+                xmlFile = XDocument.Load(stream);
                 XElement ScaleformPreallocation = xmlFile.Element("ScaleformPreallocation");
                 if (ScaleformPreallocation != null)
                 {
@@ -1788,7 +1922,6 @@ namespace GunplayMetaEditor
 
                 if (changesMade > 0)
                 {
-                    if (!test) { xmlFile.Save(arg + (Debug ? "test" : "")); }
                     return true;
                 }
                 else
@@ -1798,20 +1931,21 @@ namespace GunplayMetaEditor
             }
             catch
             {
-                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+                PrintLine("Error parsing " + Path.GetFileName(path).ToUpper() + "as XML", ConsoleColor.Red, 0.5f);
                 return false;
             }
         }
 
-        private static bool TaskdataMod(string arg, bool test)
+        private static bool TaskdataMod(string path, byte[] file, bool test)
         {
-            if (!test) { PrintLine("Task Data Info File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f); }
+            if (!test) { PrintLine("Task Data Info File - " + Path.GetFileName(path).ToUpper(), ConsoleColor.Green, 0.5f); }
 
             XDocument xmlFile;
             try
             {
                 int changesMade = 0;
-                xmlFile = XDocument.Load(arg);
+                Stream stream = new MemoryStream(file);
+                xmlFile = XDocument.Load(stream);
                 var query = from c in xmlFile.Elements("CTaskDataInfoManager").Elements("aTaskData").Elements("Item")
                             select c;
                 foreach (XElement CTaskDataInfo in query)
@@ -1829,7 +1963,6 @@ namespace GunplayMetaEditor
                 }
                 if (changesMade > 0)
                 {
-                    if (!test) { xmlFile.Save(arg + (Debug ? "test" : "")); }
                     return true;
                 }
                 else
@@ -1839,20 +1972,21 @@ namespace GunplayMetaEditor
             }
             catch
             {
-                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+                PrintLine("Error parsing " + Path.GetFileName(path).ToUpper() + "as XML", ConsoleColor.Red, 0.5f);
                 return false;
             }
         }
 
-        private static bool WeaponsMod(string arg, bool test)
+        private static bool WeaponsMod(string path, byte[] file, bool test)
         {
-            if (!test) { PrintLine("Weapon Info File - " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Green, 0.5f); }
+            if (!test) { PrintLine("Weapon Info File - " + Path.GetFileName(path).ToUpper(), ConsoleColor.Green, 0.5f); }
 
             XDocument xmlFile;
             try
             {
                 int changesMade = 0;
-                xmlFile = XDocument.Load(arg);
+                Stream stream = new MemoryStream(file);
+                xmlFile = XDocument.Load(stream);
                 var query = from c in xmlFile.Elements("CWeaponInfoBlob").Elements("Infos")
                             select c;
                 foreach (XElement Info in query)
@@ -1863,7 +1997,7 @@ namespace GunplayMetaEditor
                     foreach (XElement CWeaponInfo in que)
                     {
                         var typ = CWeaponInfo.Attribute("type").Value;
-                        if (typ == "CAmmoInfo" && Path.GetFileName(arg).ToLower() == "weapons.meta")
+                        if (typ == "CAmmoInfo" && Path.GetFileName(path).ToLower() == "weapons.meta")
                         {
                             if (!insertAmmoHere)
                             {
@@ -1890,7 +2024,7 @@ namespace GunplayMetaEditor
                                 continue;
                             }
 
-                            PrintLine(CWeaponInfo.Element("Name").Value, ConsoleColor.Yellow, 0.0f);
+                            if (!test) { PrintLine(CWeaponInfo.Element("Name").Value, ConsoleColor.Yellow, 0.0f); }
 
                             if (usingRGS)
                             {
@@ -1977,7 +2111,7 @@ namespace GunplayMetaEditor
                                     changesMade += ValueCheckSet(EInfo, "value", "1.000000", test, "   Stock Armor Damage Modifier Disabled.") ? 1 : 0;
                                 }
                             }
-                            Console.WriteLine();
+                            if (!test) { Console.WriteLine(); }
                         }
                     }
 
@@ -2052,7 +2186,6 @@ namespace GunplayMetaEditor
                 }
                 if (changesMade > 0)
                 {
-                    if (!test) { xmlFile.Save(arg + (Debug ? "test" : "")); }
                     return true;
                 }
                 else
@@ -2062,59 +2195,9 @@ namespace GunplayMetaEditor
             }
             catch
             {
-                PrintLine("Error loading " + Path.GetFileName(arg).ToUpper(), ConsoleColor.Red, 0.5f);
+                PrintLine("Error parsing " + Path.GetFileName(path).ToUpper() + "as XML" , ConsoleColor.Red, 0.5f);
                 return false;
             }
-        }
-
-        public static bool Question(string q)
-        {
-            bool answered = false;
-            bool answer = false;
-            int startTick = Environment.TickCount;
-            bool started = false;
-            Console.CursorVisible = false;
-            while (!started)
-            {
-                if ((Environment.TickCount - startTick) < 1000)
-                {
-                    Print(q + " [y/n]", Environment.TickCount % 200 < 100 ? ConsoleColor.Red : ConsoleColor.White, 0.0f);
-                    Thread.Sleep(0);
-                }
-                else
-                {
-                    PrintLine(q + " [y/n]", ConsoleColor.Yellow, 0.0f);
-                    Console.CursorVisible = true;
-                    started = true;
-                }
-            }
-            while (!answered)
-            {
-
-
-                ConsoleKeyInfo Key = Console.ReadKey(false);
-                switch (Key.Key)
-                {
-                    case ConsoleKey.Y:
-                        {
-                            PrintLine("Yes.", ConsoleColor.Green, 0.0f);
-                            Console.WriteLine();
-                            answer = true;
-                            answered = true;
-                            break;
-                        }
-                    case ConsoleKey.N:
-                        {
-                            PrintLine("No.", ConsoleColor.Red, 0.0f);
-                            Console.WriteLine();
-                            answer = false;
-                            answered = true;
-                            break;
-                        }
-                }
-
-            }
-            return answer;
         }
     }
 
@@ -2287,5 +2370,106 @@ namespace GunplayMetaEditor
                 
             }
         }
+    }
+
+    /// <summary>
+    /// An ASCII progress bar
+    /// </summary>
+    public class ProgressBar : IDisposable, IProgress<double>
+    {
+        private int blockCount = 128;
+        private readonly TimeSpan animationInterval = TimeSpan.FromSeconds(1.0 / 8);
+        private const string animation = @"░▒▓█▓▒";
+
+        private readonly Timer timer;
+
+        private double currentProgress = 0;
+        private string currentText = string.Empty;
+        private bool disposed = false;
+        private int animationIndex = 0;
+
+        public ProgressBar(int size)
+        {
+            blockCount = size;
+            timer = new Timer(TimerHandler);
+
+            // A progress bar is only for temporary display in a console window.
+            // If the console output is redirected to a file, draw nothing.
+            // Otherwise, we'll end up with a lot of garbage in the target file.
+            if (!Console.IsOutputRedirected)
+            {
+                ResetTimer();
+            }
+        }
+
+        public void Report(double value)
+        {
+            // Make sure value is in [0..1] range
+            value = Math.Max(0, Math.Min(1, value));
+            Interlocked.Exchange(ref currentProgress, value);
+        }
+
+        private void TimerHandler(object state)
+        {
+            lock (timer)
+            {
+                if (disposed) return;
+
+                int progressBlockCount = (int)(currentProgress * blockCount);
+                int percent = (int)(currentProgress * 100);
+                string text = string.Format("{0}{2}{1}",
+                    new string('█', progressBlockCount), 
+                    new string('░', blockCount - progressBlockCount),
+                    animation[animationIndex++ % animation.Length]
+                    );
+                UpdateText(text);
+
+                ResetTimer();
+            }
+        }
+
+        private void UpdateText(string text)
+        {
+            // Get length of common portion
+            int commonPrefixLength = 0;
+            int commonLength = Math.Min(currentText.Length, text.Length);
+            while (commonPrefixLength < commonLength && text[commonPrefixLength] == currentText[commonPrefixLength])
+            {
+                commonPrefixLength++;
+            }
+
+            // Backtrack to the first differing character
+            StringBuilder outputBuilder = new StringBuilder();
+            outputBuilder.Append('\b', currentText.Length - commonPrefixLength);
+
+            // Output new suffix
+            outputBuilder.Append(text.Substring(commonPrefixLength));
+
+            // If the new text is shorter than the old one: delete overlapping characters
+            int overlapCount = currentText.Length - text.Length;
+            if (overlapCount > 0)
+            {
+                outputBuilder.Append(' ', overlapCount);
+                outputBuilder.Append('\b', overlapCount);
+            }
+
+            Console.Write(outputBuilder);
+            currentText = text;
+        }
+
+        private void ResetTimer()
+        {
+            timer.Change(animationInterval, TimeSpan.FromMilliseconds(-1));
+        }
+
+        public void Dispose()
+        {
+            lock (timer)
+            {
+                disposed = true;
+                UpdateText(string.Empty);
+            }
+        }
+
     }
 }
